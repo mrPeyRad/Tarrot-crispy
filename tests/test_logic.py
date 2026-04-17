@@ -6,8 +6,11 @@ import random
 import tempfile
 import unittest
 
+from app.ai import build_fallback_question_reading
 from app.bot import TarotHoroscopeBot
+from app.biorhythm import build_biorhythm_report, build_biorhythm_snapshot, parse_birth_date
 from app.cosmic import (
+    build_compatibility_insight,
     build_compatibility_report,
     build_daily_astro_alert,
     build_lunar_calendar,
@@ -16,12 +19,20 @@ from app.cosmic import (
 from app.database import Storage
 from app.horoscope import build_daily_horoscope, build_weekly_horoscope, parse_sign
 from app.mystic import MAGIC_BALL_REPLIES, ask_magic_ball, draw_rune_of_day, format_rune_draw
+from app.share_cards import (
+    render_biorhythm_share_card,
+    render_compatibility_share_card,
+    render_tarot_share_card,
+)
 from app.tarot import (
+    CardDraw,
     TAROT_DECK,
     build_card_image_url,
+    draw_question_card,
     draw_three_card_spread,
     draw_weekly_card,
     format_card_guide,
+    format_question_caption,
     format_weekly_caption,
     format_yes_no_caption,
     get_card_by_query,
@@ -77,6 +88,12 @@ class TarotTests(unittest.TestCase):
         caption = format_weekly_caption(draw_weekly_card(deck_key="thoth"))
         self.assertIn("Карта недели", caption)
 
+    def test_question_caption_contains_question_and_card_name(self) -> None:
+        draw = CardDraw(position="Вопрос к таро", card=TAROT_DECK[0], is_reversed=False, deck_key="minimal")
+        caption = format_question_caption(draw, "Стоит ли менять работу?", "Карта просит не бояться нового.")
+        self.assertIn("Стоит ли менять работу?", caption)
+        self.assertIn(TAROT_DECK[0].name_ru, caption)
+
 
 class HoroscopeTests(unittest.TestCase):
     def test_parse_sign_supports_cases(self) -> None:
@@ -111,6 +128,13 @@ class HoroscopeTests(unittest.TestCase):
         self.assertIn("Овен + Лев", report)
         self.assertIn("Процент совместимости:", report)
 
+    def test_compatibility_insight_exposes_score_and_summary(self) -> None:
+        insight = build_compatibility_insight(parse_sign("овен"), parse_sign("лев"))
+        self.assertGreaterEqual(insight.score, 35)
+        self.assertTrue(insight.strength)
+        self.assertIn("Овен", insight.first.name)
+        self.assertTrue(insight.summary)
+
     def test_astro_alert_is_deterministic_for_same_day(self) -> None:
         first = build_daily_astro_alert(for_day=date(2026, 4, 17))
         second = build_daily_astro_alert(for_day=date(2026, 4, 17))
@@ -129,6 +153,43 @@ class MysticTests(unittest.TestCase):
         self.assertIn(reply.answer, {item.answer for item in MAGIC_BALL_REPLIES})
 
 
+class BiorhythmTests(unittest.TestCase):
+    def test_parse_birth_date_supports_multiple_formats(self) -> None:
+        self.assertEqual(parse_birth_date("14.08.1996"), date(1996, 8, 14))
+        self.assertEqual(parse_birth_date("1996-08-14"), date(1996, 8, 14))
+        self.assertIsNone(parse_birth_date("31.31.1996"))
+
+    def test_biorhythm_snapshot_contains_seven_points(self) -> None:
+        snapshot = build_biorhythm_snapshot(date(1996, 8, 14), target_date=date(2026, 4, 17))
+        self.assertEqual(len(snapshot.points), 7)
+        self.assertIn("Биоритмы", build_biorhythm_report(snapshot))
+
+
+class ShareCardTests(unittest.TestCase):
+    def test_tarot_share_card_renders_png(self) -> None:
+        draw = CardDraw(position="Карта дня", card=TAROT_DECK[0], is_reversed=False, deck_key="minimal")
+        png = render_tarot_share_card(draw, "Карта дня", "Смелее смотри в новое.", "@test_bot")
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+
+    def test_compatibility_share_card_renders_png(self) -> None:
+        insight = build_compatibility_insight(parse_sign("овен"), parse_sign("лев"))
+        png = render_compatibility_share_card(insight, "@test_bot")
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+
+    def test_biorhythm_share_card_renders_png(self) -> None:
+        snapshot = build_biorhythm_snapshot(date(1996, 8, 14), target_date=date(2026, 4, 17))
+        png = render_biorhythm_share_card(snapshot, "@test_bot")
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+
+
+class AITests(unittest.TestCase):
+    def test_fallback_question_reading_mentions_card_and_question(self) -> None:
+        draw = draw_question_card(deck_key="minimal")
+        text = build_fallback_question_reading("Стоит ли менять работу?", draw)
+        self.assertIn("Стоит ли менять работу?", text)
+        self.assertIn(draw.card.name_ru, text)
+
+
 class StorageTests(unittest.TestCase):
     def test_storage_persists_profile_history_journal_and_subscription(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -142,11 +203,13 @@ class StorageTests(unittest.TestCase):
                 last_name=None,
             )
             storage.save_zodiac_sign(1, "Овен")
+            storage.save_birth_date(1, "1996-08-14")
             storage.save_preferred_deck(1, "minimal")
             profile = storage.get_user_profile(1)
 
             self.assertIsNotNone(profile)
             self.assertEqual(profile.zodiac_sign, "Овен")
+            self.assertEqual(profile.birth_date, "1996-08-14")
             self.assertEqual(get_deck_info(profile.preferred_deck).key, "minimal")
 
             storage.save_conversation_state(100, 1, "await_sign", {"next": "horoscope"})

@@ -26,6 +26,7 @@ class UserProfile:
     first_name: str | None
     last_name: str | None
     zodiac_sign: str | None
+    birth_date: str | None
     preferred_deck: str
     created_at: str
     updated_at: str
@@ -99,6 +100,7 @@ class Storage:
                     first_name TEXT,
                     last_name TEXT,
                     zodiac_sign TEXT,
+                    birth_date TEXT,
                     preferred_deck TEXT NOT NULL DEFAULT 'rider-waite',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -154,6 +156,12 @@ class Storage:
                     updated_at TEXT NOT NULL
                 );
                 """
+            )
+            self._ensure_column(
+                connection,
+                table_name="user_profiles",
+                column_name="birth_date",
+                column_definition="TEXT",
             )
             self._ensure_column(
                 connection,
@@ -217,6 +225,7 @@ class Storage:
                     first_name,
                     last_name,
                     zodiac_sign,
+                    birth_date,
                     preferred_deck,
                     created_at,
                     updated_at
@@ -235,6 +244,7 @@ class Storage:
             first_name=row["first_name"],
             last_name=row["last_name"],
             zodiac_sign=row["zodiac_sign"],
+            birth_date=row["birth_date"],
             preferred_deck=row["preferred_deck"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -262,6 +272,18 @@ class Storage:
                 WHERE user_id = ?
                 """,
                 (deck_key, now, user_id),
+            )
+
+    def save_birth_date(self, user_id: int, birth_date_iso: str) -> None:
+        now = _utcnow_iso()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE user_profiles
+                SET birth_date = ?, updated_at = ?
+                WHERE user_id = ?
+                """,
+                (birth_date_iso, now, user_id),
             )
 
     def save_conversation_state(

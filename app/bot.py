@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 import logging
 from pathlib import Path
 import re
 import time
 from typing import Any
+from urllib.parse import quote
 
+from app.ai import TarotQuestionInterpreter
+from app.biorhythm import build_biorhythm_report, build_biorhythm_snapshot, parse_birth_date
 from app.config import Settings
 from app.cosmic import (
+    build_compatibility_insight,
     build_compatibility_report,
     build_daily_astro_alert,
     build_lunar_calendar,
@@ -22,15 +26,22 @@ from app.horoscope import (
     parse_sign,
 )
 from app.mystic import ask_magic_ball, draw_rune_of_day, format_magic_ball_reply, format_rune_draw
+from app.share_cards import (
+    render_biorhythm_share_card,
+    render_compatibility_share_card,
+    render_tarot_share_card,
+)
 from app.tarot import (
     build_card_image_url,
     draw_daily_card,
+    draw_question_card,
     draw_relationship_card,
     draw_three_card_spread,
     draw_weekly_card,
     draw_yes_no_card,
     format_card_guide,
     format_daily_caption,
+    format_question_caption,
     format_relationship_caption,
     format_three_card_caption,
     format_weekly_caption,
@@ -66,6 +77,8 @@ MAGIC_BALL_TRIGGERS = {"шар предсказаний", "магический 
 DECK_TRIGGERS = {"колода", "сменить колоду", "визуал колоды"}
 JOURNAL_TRIGGERS = {"дневник предсказаний", "дневник", "журнал предсказаний"}
 SUBSCRIBE_TRIGGERS = {"рассылка", "подписка", "подписаться"}
+TAROT_QUESTION_TRIGGERS = {"вопрос к таро", "спросить таро", "таро по вопросу"}
+BIORHYTHM_TRIGGERS = {"биоритмы", "биоритм"}
 CANCEL_TRIGGERS = {"отмена"}
 COMMAND_RE = re.compile(r"^/(?P<command>[A-Za-z0-9_]+)(?:@\w+)?(?:\s+(?P<args>.*))?$")
 TIME_RE = re.compile(r"^(?P<hour>\d{1,2}):(?P<minute>\d{2})$")
@@ -76,6 +89,7 @@ SPREAD_LABELS = {
     "three-card": "Расклад на 3 карты",
     "yes-no": "Да/Нет",
     "relationship": "Карта отношений",
+    "question": "Вопрос к таро",
 }
 
 ENTRY_LABELS = {
@@ -84,12 +98,14 @@ ENTRY_LABELS = {
     "tarot-three-card": "Расклад на 3 карты",
     "tarot-yes-no": "Да/Нет",
     "tarot-relationship": "Карта отношений",
+    "tarot-question": "Вопрос к таро",
     "horoscope-daily": "Гороскоп на день",
     "horoscope-weekly": "Гороскоп на неделю",
     "moon": "Лунный календарь",
     "astroalert": "Астро-алерт",
     "rune": "Руна дня",
     "magic-ball": "Шар предсказаний",
+    "biorhythm": "Биоритмы",
 }
 
 SUBSCRIPTION_KEYBOARD = (
@@ -106,6 +122,11 @@ class TarotHoroscopeBot:
         self.settings = settings
         self.api = TelegramAPI(settings.bot_token, request_timeout=settings.request_timeout)
         self.storage = Storage(settings.database_path)
+        self.tarot_ai = TarotQuestionInterpreter(
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+        )
+        self._bot_username = settings.bot_username
 
     @classmethod
     def from_project_root(cls, project_root: Path) -> "TarotHoroscopeBot":
@@ -209,6 +230,10 @@ class TarotHoroscopeBot:
             self._send_daily_card(chat_id, user_id, message_id)
             return
 
+        if command in {"ask", "tarotask", "question"}:
+            self._handle_tarot_question(chat_id, user_id, message_id, args or "")
+            return
+
         if command == "spread3":
             self._send_three_card_spread(chat_id, user_id, message_id)
             return
@@ -231,6 +256,10 @@ class TarotHoroscopeBot:
 
         if command in {"journal", "diary"}:
             self._send_journal(chat_id, user_id, message_id)
+            return
+
+        if command in {"biorhythm", "bio"}:
+            self._handle_biorhythm_request(chat_id, user_id, message_id, args or "")
             return
 
         if command in {"subscribe", "subscription"}:
@@ -258,6 +287,10 @@ class TarotHoroscopeBot:
 
         if normalized_text in CARD_OF_DAY_TRIGGERS:
             self._send_daily_card(chat_id, user_id, message_id)
+            return
+
+        if normalized_text in TAROT_QUESTION_TRIGGERS:
+            self._handle_tarot_question(chat_id, user_id, message_id, "")
             return
 
         if normalized_text in HOROSCOPE_TRIGGERS:
@@ -306,6 +339,10 @@ class TarotHoroscopeBot:
 
         if normalized_text in JOURNAL_TRIGGERS:
             self._send_journal(chat_id, user_id, message_id)
+            return
+
+        if normalized_text in BIORHYTHM_TRIGGERS:
+            self._handle_biorhythm_request(chat_id, user_id, message_id, "")
             return
 
         if normalized_text in SUBSCRIBE_TRIGGERS:
@@ -436,6 +473,27 @@ class TarotHoroscopeBot:
             self._send_magic_ball(chat_id, user_id, reply_to_message_id, question)
             return True
 
+        if state == "await_tarot_question":
+            question = text.strip()
+            if not question:
+                self._ask_for_tarot_question(chat_id, reply_to_message_id, invalid_value=True)
+                return True
+
+            self.storage.clear_conversation_state(chat_id, user_id)
+            self._send_tarot_question_reading(chat_id, user_id, reply_to_message_id, question)
+            return True
+
+        if state == "await_birth_date":
+            birth_date = parse_birth_date(text)
+            if birth_date is None:
+                self._ask_for_birth_date(chat_id, reply_to_message_id, invalid_value=True)
+                return True
+
+            self.storage.save_birth_date(user_id, birth_date.isoformat())
+            self.storage.clear_conversation_state(chat_id, user_id)
+            self._send_biorhythm(chat_id, user_id, reply_to_message_id, birth_date)
+            return True
+
         if state == "await_deck_choice":
             deck = parse_deck(text)
             if deck is None:
@@ -504,12 +562,14 @@ class TarotHoroscopeBot:
             "Я умею работать и как таро-бот, и как бот с гороскопом, лунным календарём и маленькими мистическими ритуалами.\n\n"
             "Команды:\n"
             "/card — карта дня\n"
+            "/ask [вопрос] — карта под конкретный запрос с AI-трактовкой\n"
             "/spread3 — расклад на 3 карты\n"
             "/yesno [вопрос] — быстрый ответ Да/Нет\n"
             "/relationship — карта отношений\n"
             "/cardinfo [название карты] — мини-энциклопедия карты\n"
             "/horoscope [знак] — гороскоп на день\n"
             "/week [знак] — гороскоп на неделю\n"
+            "/biorhythm [дата рождения] — биоритмы на сегодня и график\n"
             "/moon — лунный календарь на сегодня\n"
             "/compat [знак] или [знак знак] — совместимость знаков\n"
             "/astroalert — астросигнал дня\n"
@@ -522,9 +582,9 @@ class TarotHoroscopeBot:
             "/setsign [знак] — сохранить свой знак\n"
             "/profile — показать профиль и недавние расклады\n"
             "/cancel — сбросить текущий диалог\n\n"
-            "Текстовые триггеры тоже работают: «карта дня», «гороскоп», "
+            "Текстовые триггеры тоже работают: «карта дня», «вопрос к таро», «гороскоп», "
             "«гороскоп на неделю», «лунный календарь», «совместимость», «астроалерт», «руна дня», "
-            "«расклад 3 карты», «да/нет», «карта отношений», «значение карты».\n"
+            "«расклад 3 карты», «да/нет», «карта отношений», «значение карты», «биоритмы».\n"
             "В группах plain-text триггеры видны боту, если у него отключён privacy mode в BotFather."
         )
         self.api.send_message(chat_id, help_text, reply_to_message_id=reply_to_message_id)
@@ -546,6 +606,7 @@ class TarotHoroscopeBot:
         lines = [
             "Твой профиль",
             f"Знак зодиака: {profile.zodiac_sign or 'пока не задан'}",
+            f"Дата рождения: {self._format_birth_date(profile.birth_date)}",
             f"Колода: {get_deck_info(profile.preferred_deck).name_ru}",
             f"Сохранённых раскладов: {history_count}",
             f"Записей в дневнике: {journal_count}",
@@ -565,7 +626,10 @@ class TarotHoroscopeBot:
             lines.extend(self._format_history_entry(entry) for entry in recent_history)
 
         lines.append("")
-        lines.append("Чтобы обновить знак, используй /setsign. Колоду можно сменить через /deck, дневник открыть через /journal.")
+        lines.append(
+            "Чтобы обновить знак, используй /setsign. Колоду можно сменить через /deck, "
+            "дневник открыть через /journal, а биоритмы посмотреть через /biorhythm."
+        )
         self.api.send_message(
             chat_id,
             "\n".join(lines),
@@ -803,6 +867,51 @@ class TarotHoroscopeBot:
         )
         self._ask_for_sign(chat_id, reply_to_message_id)
 
+    def _handle_tarot_question(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        raw_question: str,
+    ) -> None:
+        question = raw_question.strip()
+        if not question:
+            self.storage.save_conversation_state(chat_id, user_id, "await_tarot_question")
+            self._ask_for_tarot_question(chat_id, reply_to_message_id)
+            return
+
+        self.storage.clear_conversation_state(chat_id, user_id)
+        self._send_tarot_question_reading(chat_id, user_id, reply_to_message_id, question)
+
+    def _handle_biorhythm_request(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        raw_birth_date: str,
+    ) -> None:
+        if raw_birth_date.strip():
+            birth_date = parse_birth_date(raw_birth_date)
+            if birth_date is None:
+                self.storage.save_conversation_state(chat_id, user_id, "await_birth_date")
+                self._ask_for_birth_date(chat_id, reply_to_message_id, invalid_value=True)
+                return
+
+            self.storage.save_birth_date(user_id, birth_date.isoformat())
+            self.storage.clear_conversation_state(chat_id, user_id)
+            self._send_biorhythm(chat_id, user_id, reply_to_message_id, birth_date)
+            return
+
+        profile = self.storage.get_user_profile(user_id)
+        if profile and profile.birth_date:
+            birth_date = parse_birth_date(profile.birth_date)
+            if birth_date is not None:
+                self._send_biorhythm(chat_id, user_id, reply_to_message_id, birth_date)
+                return
+
+        self.storage.save_conversation_state(chat_id, user_id, "await_birth_date")
+        self._ask_for_birth_date(chat_id, reply_to_message_id)
+
     def _send_compatibility_report(
         self,
         chat_id: int,
@@ -828,11 +937,35 @@ class TarotHoroscopeBot:
             )
             return
 
+        report = build_compatibility_report(first_sign, second_sign)
+        insight = build_compatibility_insight(first_sign, second_sign)
+        share_markup = self._build_share_keyboard(
+            report,
+            button_text="Поделиться с партнером",
+        )
+
+        try:
+            card_bytes = render_compatibility_share_card(insight, self._get_bot_username())
+        except Exception:
+            LOGGER.exception("Не удалось собрать карточку совместимости")
+            card_bytes = None
+
+        if card_bytes is not None:
+            self.api.send_photo(
+                chat_id,
+                photo_bytes=card_bytes,
+                caption=report,
+                reply_to_message_id=reply_to_message_id,
+                reply_markup=share_markup,
+                filename="compatibility-card.png",
+            )
+            return
+
         self.api.send_message(
             chat_id,
-            build_compatibility_report(first_sign, second_sign),
+            report,
             reply_to_message_id=reply_to_message_id,
-            reply_markup={"remove_keyboard": True},
+            reply_markup=share_markup,
         )
 
     def _send_astro_alert(
@@ -1187,11 +1320,37 @@ class TarotHoroscopeBot:
             source=source,
             details=draw.to_history_payload(),
         )
+        caption = format_daily_caption(draw)
+        share_markup = self._build_share_keyboard(caption, button_text="Поделиться картой")
+
+        try:
+            card_bytes = render_tarot_share_card(
+                draw_result=draw,
+                title="Карта дня",
+                body_text=draw.meaning,
+                bot_username=self._get_bot_username(),
+            )
+        except Exception:
+            LOGGER.exception("Не удалось собрать карточку карты дня")
+            card_bytes = None
+
+        if card_bytes is not None:
+            self.api.send_photo(
+                chat_id,
+                photo_bytes=card_bytes,
+                caption=caption,
+                reply_to_message_id=reply_to_message_id,
+                reply_markup=share_markup,
+                filename="daily-card.png",
+            )
+            return
+
         self.api.send_photo(
             chat_id,
             photo_url=draw.image_url,
-            caption=format_daily_caption(draw),
+            caption=caption,
             reply_to_message_id=reply_to_message_id,
+            reply_markup=share_markup,
         )
 
     def _send_weekly_card(
@@ -1224,6 +1383,121 @@ class TarotHoroscopeBot:
             photo_url=draw.image_url,
             caption=format_weekly_caption(draw),
             reply_to_message_id=reply_to_message_id,
+        )
+
+    def _send_tarot_question_reading(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        question: str,
+    ) -> None:
+        deck_key = self._get_user_deck_key(user_id)
+        draw = draw_question_card(deck_key=deck_key)
+        interpretation = self.tarot_ai.interpret(question, draw)
+
+        self.storage.record_tarot_history(
+            chat_id=chat_id,
+            user_id=user_id,
+            spread_type="question",
+            deck_key=draw.deck_key,
+            cards_payload=[draw.to_history_payload()],
+            question=question,
+        )
+        self.storage.record_journal_entry(
+            chat_id=chat_id,
+            user_id=user_id,
+            entry_type="tarot-question",
+            title=f"Вопрос к таро: {draw.card.name_ru}",
+            summary=question,
+            details={
+                "question": question,
+                "card": draw.to_history_payload(),
+                "used_ai": interpretation.used_ai,
+            },
+        )
+
+        caption = format_question_caption(draw, question, interpretation.text)
+        if interpretation.note:
+            caption = f"{caption}\n\n{interpretation.note}"
+
+        share_markup = self._build_share_keyboard(caption, button_text="Поделиться раскладом")
+        try:
+            card_bytes = render_tarot_share_card(
+                draw_result=draw,
+                title="Вопрос к таро",
+                body_text=interpretation.text,
+                bot_username=self._get_bot_username(),
+                question=question,
+            )
+        except Exception:
+            LOGGER.exception("Не удалось собрать карточку вопроса к таро")
+            card_bytes = None
+
+        if card_bytes is not None:
+            self.api.send_photo(
+                chat_id,
+                photo_bytes=card_bytes,
+                caption=caption,
+                reply_to_message_id=reply_to_message_id,
+                reply_markup=share_markup,
+                filename="tarot-question.png",
+            )
+            return
+
+        self.api.send_message(
+            chat_id,
+            caption,
+            reply_to_message_id=reply_to_message_id,
+            reply_markup=share_markup,
+        )
+
+    def _send_biorhythm(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        birth_date: date,
+    ) -> None:
+        snapshot = build_biorhythm_snapshot(birth_date)
+        report = build_biorhythm_report(snapshot)
+        self.storage.record_journal_entry(
+            chat_id=chat_id,
+            user_id=user_id,
+            entry_type="biorhythm",
+            title="Биоритмы на сегодня",
+            summary=f"Дата рождения: {birth_date.strftime('%d.%m.%Y')}",
+            details={
+                "birth_date": birth_date.isoformat(),
+                "physical": round(snapshot.physical, 4),
+                "emotional": round(snapshot.emotional, 4),
+                "intellectual": round(snapshot.intellectual, 4),
+            },
+        )
+
+        share_markup = self._build_share_keyboard(report, button_text="Поделиться графиком")
+        try:
+            card_bytes = render_biorhythm_share_card(snapshot, self._get_bot_username())
+        except Exception:
+            LOGGER.exception("Не удалось собрать карточку биоритмов")
+            card_bytes = None
+
+        if card_bytes is not None:
+            self.api.send_photo(
+                chat_id,
+                photo_bytes=card_bytes,
+                caption=report,
+                reply_to_message_id=reply_to_message_id,
+                reply_markup=share_markup,
+                filename="biorhythm-card.png",
+            )
+            return
+
+        self.api.send_message(
+            chat_id,
+            report,
+            reply_to_message_id=reply_to_message_id,
+            reply_markup=share_markup,
         )
 
     def _send_three_card_spread(self, chat_id: int, user_id: int, reply_to_message_id: int) -> None:
@@ -1431,6 +1705,40 @@ class TarotHoroscopeBot:
             reply_to_message_id=reply_to_message_id,
         )
 
+    def _ask_for_tarot_question(
+        self,
+        chat_id: int,
+        reply_to_message_id: int,
+        invalid_value: bool = False,
+    ) -> None:
+        text = (
+            "Мне нужен сам вопрос. Напиши его одним сообщением, например: Стоит ли менять работу?"
+            if invalid_value
+            else "Задай конкретный вопрос к таро. Например: Стоит ли мне менять работу?"
+        )
+        self.api.send_message(
+            chat_id,
+            text,
+            reply_to_message_id=reply_to_message_id,
+        )
+
+    def _ask_for_birth_date(
+        self,
+        chat_id: int,
+        reply_to_message_id: int,
+        invalid_value: bool = False,
+    ) -> None:
+        text = (
+            "Не понял дату рождения. Напиши её в формате ДД.ММ.ГГГГ, например 14.08.1996."
+            if invalid_value
+            else "Чтобы посчитать биоритмы, пришли дату рождения в формате ДД.ММ.ГГГГ."
+        )
+        self.api.send_message(
+            chat_id,
+            text,
+            reply_to_message_id=reply_to_message_id,
+        )
+
     def _ask_for_deck(
         self,
         chat_id: int,
@@ -1543,6 +1851,50 @@ class TarotHoroscopeBot:
         if entry.question:
             return f"{created} — {label}: {cards} | Вопрос: {entry.question}"
         return f"{created} — {label}: {cards}"
+
+    def _get_bot_username(self) -> str:
+        if self._bot_username:
+            return self._bot_username
+
+        try:
+            me = self.api.get_me()
+        except TelegramAPIError:
+            LOGGER.exception("Не удалось получить username бота через getMe")
+            self._bot_username = "@tarot_bot"
+            return self._bot_username
+
+        username = str(me.get("username", "")).strip()
+        self._bot_username = f"@{username}" if username else "@tarot_bot"
+        return self._bot_username
+
+    def _build_share_keyboard(self, text: str, button_text: str) -> dict[str, Any]:
+        share_url = self._build_share_url(text)
+        return {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": button_text,
+                        "url": share_url,
+                    }
+                ]
+            ]
+        }
+
+    def _build_share_url(self, text: str) -> str:
+        bot_username = self._get_bot_username().lstrip("@")
+        bot_link = f"https://t.me/{bot_username}" if bot_username else "https://t.me"
+        encoded_url = quote(bot_link, safe="")
+        encoded_text = quote(text[:900], safe="")
+        return f"https://t.me/share/url?url={encoded_url}&text={encoded_text}"
+
+    @staticmethod
+    def _format_birth_date(raw_value: str | None) -> str:
+        if not raw_value:
+            return "пока не задана"
+        parsed = parse_birth_date(raw_value)
+        if parsed is None:
+            return raw_value
+        return parsed.strftime("%d.%m.%Y")
 
     @staticmethod
     def _parse_subscription_cadence(text: str) -> str | None:

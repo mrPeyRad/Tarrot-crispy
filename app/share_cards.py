@@ -1,0 +1,382 @@
+from __future__ import annotations
+
+from io import BytesIO
+from pathlib import Path
+from typing import Iterable
+
+from app.biorhythm import BiorhythmSnapshot
+from app.cosmic import CompatibilityInsight
+from app.tarot import CardDraw, get_deck_info
+
+try:
+    from PIL import Image, ImageColor, ImageDraw, ImageFont
+except ImportError:  # pragma: no cover - depends on optional dependency
+    Image = None  # type: ignore[assignment]
+    ImageColor = None  # type: ignore[assignment]
+    ImageDraw = None  # type: ignore[assignment]
+    ImageFont = None  # type: ignore[assignment]
+
+
+CANVAS_SIZE = (1080, 1350)
+
+
+def render_tarot_share_card(
+    draw_result: CardDraw,
+    title: str,
+    body_text: str,
+    bot_username: str,
+    question: str | None = None,
+) -> bytes:
+    _require_pillow()
+    deck = get_deck_info(draw_result.deck_key)
+    image = _create_canvas(
+        primary=f"#{deck.background_hex}",
+        secondary=f"#{deck.foreground_hex}",
+    )
+    draw = ImageDraw.Draw(image)
+    title_font = _load_font(72, bold=True)
+    subtitle_font = _load_font(46, bold=True)
+    body_font = _load_font(36)
+    small_font = _load_font(26)
+    tiny_font = _load_font(24)
+
+    _draw_header(draw, "Mystic Card", title, bot_username, title_font, small_font)
+    _draw_glass_card(draw, (72, 220, 1008, 1240))
+
+    draw.text((108, 270), draw_result.card.name_ru, font=title_font, fill="#fff8ef")
+    orientation_box = (108, 362, 520, 424)
+    _draw_pill(draw, orientation_box, draw_result.orientation_label.title(), subtitle_font, "#fff8ef", "#00000055")
+
+    keyword_text = " • ".join(draw_result.card.keywords)
+    _draw_wrapped_text(draw, keyword_text, body_font, "#f7f0dd", 108, 460, 864, 2)
+
+    next_y = 570
+    if question:
+        _draw_section_label(draw, "Вопрос", 108, next_y, subtitle_font, small_font)
+        next_y = _draw_wrapped_text(draw, question, body_font, "#fff8ef", 108, next_y + 62, 864, 3) + 26
+
+    _draw_section_label(draw, title, 108, next_y, subtitle_font, small_font)
+    _draw_wrapped_text(
+        draw,
+        body_text,
+        body_font,
+        "#fff8ef",
+        108,
+        next_y + 62,
+        864,
+        9,
+    )
+
+    watermark = f"репост из {bot_username}"
+    draw.text((108, 1188), watermark, font=tiny_font, fill="#f8edd2cc")
+    return _export_png(image)
+
+
+def render_compatibility_share_card(
+    insight: CompatibilityInsight,
+    bot_username: str,
+) -> bytes:
+    _require_pillow()
+    image = _create_canvas(primary="#18243d", secondary="#f48c6c")
+    draw = ImageDraw.Draw(image)
+    title_font = _load_font(72, bold=True)
+    subtitle_font = _load_font(42, bold=True)
+    body_font = _load_font(34)
+    small_font = _load_font(26)
+    tiny_font = _load_font(24)
+
+    _draw_header(draw, "Cosmic Match", "Совместимость знаков", bot_username, title_font, small_font)
+    _draw_glass_card(draw, (72, 220, 1008, 1240))
+
+    pair_title = f"{insight.first.name} + {insight.second.name}"
+    draw.text((108, 282), pair_title, font=title_font, fill="#fff8ef")
+
+    score_bounds = (728, 260, 972, 504)
+    draw.ellipse(score_bounds, fill="#f48c6c", outline="#fff4ea", width=6)
+    score_text = f"{insight.score}%"
+    _draw_centered_text(draw, score_text, _load_font(64, bold=True), "#18243d", score_bounds)
+    _draw_centered_text(draw, "химия", small_font, "#18243d", (728, 408, 972, 460))
+
+    _draw_section_label(draw, "Ключевая динамика", 108, 430, subtitle_font, small_font)
+    next_y = _draw_wrapped_text(draw, insight.summary, body_font, "#fff8ef", 108, 492, 540, 4) + 28
+
+    _draw_section_label(draw, "Сильная сторона", 108, next_y, subtitle_font, small_font)
+    next_y = _draw_wrapped_text(draw, insight.strength, body_font, "#fff8ef", 108, next_y + 62, 864, 3) + 28
+
+    _draw_section_label(draw, "Зона роста", 108, next_y, subtitle_font, small_font)
+    next_y = _draw_wrapped_text(draw, insight.growth_zone, body_font, "#fff8ef", 108, next_y + 62, 864, 3) + 28
+
+    _draw_section_label(draw, "Как любите", 108, next_y, subtitle_font, small_font)
+    next_y = _draw_wrapped_text(
+        draw,
+        f"{insight.first.name}: {insight.first_love_style}",
+        body_font,
+        "#fff8ef",
+        108,
+        next_y + 62,
+        864,
+        3,
+    ) + 18
+    _draw_wrapped_text(
+        draw,
+        f"{insight.second.name}: {insight.second_love_style}",
+        body_font,
+        "#fff8ef",
+        108,
+        next_y,
+        864,
+        3,
+    )
+
+    draw.text((108, 1188), f"собрано для шаринга • {bot_username}", font=tiny_font, fill="#f7eee1cc")
+    return _export_png(image)
+
+
+def render_biorhythm_share_card(snapshot: BiorhythmSnapshot, bot_username: str) -> bytes:
+    _require_pillow()
+    image = _create_canvas(primary="#10253d", secondary="#1fa4a5")
+    draw = ImageDraw.Draw(image)
+    title_font = _load_font(68, bold=True)
+    subtitle_font = _load_font(40, bold=True)
+    body_font = _load_font(32)
+    small_font = _load_font(26)
+    tiny_font = _load_font(24)
+
+    _draw_header(draw, "Body Cycles", "Биоритмы на сегодня", bot_username, title_font, small_font)
+    _draw_glass_card(draw, (72, 220, 1008, 1240))
+
+    draw.text((108, 274), snapshot.target_date.strftime("%d.%m.%Y"), font=title_font, fill="#eff8f7")
+    draw.text(
+        (108, 352),
+        f"Дата рождения: {snapshot.birth_date.strftime('%d.%m.%Y')}",
+        font=body_font,
+        fill="#d7efed",
+    )
+
+    _draw_metric(draw, "Физический", snapshot.physical, (108, 430, 380, 542), "#ff8a65")
+    _draw_metric(draw, "Эмоции", snapshot.emotional, (404, 430, 676, 542), "#ffd166")
+    _draw_metric(draw, "Интеллект", snapshot.intellectual, (700, 430, 972, 542), "#1fa4a5")
+
+    chart_bounds = (118, 620, 962, 1010)
+    _draw_chart(draw, snapshot, chart_bounds, small_font)
+    draw.text((108, 1188), f"цикл дня • {bot_username}", font=tiny_font, fill="#d7efedcc")
+    return _export_png(image)
+
+
+def _require_pillow() -> None:
+    if Image is None or ImageColor is None or ImageDraw is None or ImageFont is None:
+        raise RuntimeError("Для красивых карточек нужен Pillow.")
+
+
+def _create_canvas(primary: str, secondary: str):
+    width, height = CANVAS_SIZE
+    image = Image.new("RGBA", CANVAS_SIZE, primary)
+    draw = ImageDraw.Draw(image)
+    start = ImageColor.getrgb(primary)
+    end = ImageColor.getrgb(secondary)
+    for y in range(height):
+        mix = y / max(1, height - 1)
+        color = tuple(
+            round(start[index] * (1 - mix) + end[index] * mix)
+            for index in range(3)
+        )
+        draw.line((0, y, width, y), fill=color)
+
+    overlay = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    overlay_draw.ellipse((-120, -80, 520, 520), fill=(255, 255, 255, 24))
+    overlay_draw.ellipse((620, 80, 1240, 760), fill=(255, 255, 255, 20))
+    overlay_draw.ellipse((420, 960, 1120, 1600), fill=(255, 255, 255, 18))
+    return Image.alpha_composite(image, overlay)
+
+
+def _draw_header(draw, eyebrow: str, title: str, bot_username: str, title_font, small_font) -> None:
+    draw.text((72, 52), eyebrow.upper(), font=small_font, fill="#f6ecd6cc")
+    draw.text((72, 96), title, font=title_font, fill="#fff9ef")
+    draw.text((842, 76), bot_username, font=small_font, fill="#fff9efcc")
+
+
+def _draw_glass_card(draw, bounds: tuple[int, int, int, int]) -> None:
+    draw.rounded_rectangle(bounds, radius=42, fill="#00000055", outline="#ffffff30", width=2)
+
+
+def _draw_pill(draw, bounds: tuple[int, int, int, int], text: str, font, text_fill: str, fill: str) -> None:
+    draw.rounded_rectangle(bounds, radius=28, fill=fill)
+    _draw_centered_text(draw, text, font, text_fill, bounds)
+
+
+def _draw_centered_text(draw, text: str, font, fill: str, bounds: tuple[int, int, int, int]) -> None:
+    left, top, right, bottom = bounds
+    text_bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = text_bbox[2] - text_bbox[0]
+    text_height = text_bbox[3] - text_bbox[1]
+    x = left + ((right - left) - text_width) / 2
+    y = top + ((bottom - top) - text_height) / 2 - 4
+    draw.text((x, y), text, font=font, fill=fill)
+
+
+def _draw_section_label(draw, text: str, x: int, y: int, title_font, label_font) -> None:
+    draw.text((x, y), text, font=title_font, fill="#fff9ef")
+    draw.text((x, y - 26), "•", font=label_font, fill="#fff1d6")
+
+
+def _draw_wrapped_text(
+    draw,
+    text: str,
+    font,
+    fill: str,
+    x: int,
+    y: int,
+    max_width: int,
+    max_lines: int,
+) -> int:
+    lines = _wrap_text(draw, text, font, max_width, max_lines)
+    line_height = _line_height(font)
+    for index, line in enumerate(lines):
+        draw.text((x, y + (index * line_height)), line, font=font, fill=fill)
+    return y + (len(lines) * line_height)
+
+
+def _wrap_text(draw, text: str, font, max_width: int, max_lines: int) -> list[str]:
+    words = text.replace("\n", " \n ").split()
+    if not words:
+        return [""]
+
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        if word == "\n":
+            if current:
+                lines.append(current.rstrip())
+                current = ""
+            continue
+
+        candidate = word if not current else f"{current} {word}"
+        if _text_width(draw, candidate, font) <= max_width:
+            current = candidate
+            continue
+
+        if current:
+            lines.append(current.rstrip())
+            current = word
+        else:
+            lines.append(_truncate_to_width(draw, word, font, max_width))
+            current = ""
+
+        if len(lines) >= max_lines:
+            break
+
+    if current and len(lines) < max_lines:
+        lines.append(current.rstrip())
+
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+
+    if len(lines) == max_lines and " ".join(lines) != " ".join(words).replace(" \n ", " ").strip():
+        lines[-1] = _append_ellipsis(draw, lines[-1], font, max_width)
+    return lines
+
+
+def _truncate_to_width(draw, text: str, font, max_width: int) -> str:
+    result = text
+    while result and _text_width(draw, result, font) > max_width:
+        result = result[:-1]
+    return result.rstrip()
+
+
+def _append_ellipsis(draw, text: str, font, max_width: int) -> str:
+    candidate = text.rstrip(". ") + "…"
+    while candidate and _text_width(draw, candidate, font) > max_width:
+        candidate = candidate[:-2].rstrip() + "…"
+    return candidate
+
+
+def _text_width(draw, text: str, font) -> int:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return bbox[2] - bbox[0]
+
+
+def _line_height(font) -> int:
+    bbox = font.getbbox("Ag")
+    return (bbox[3] - bbox[1]) + 12
+
+
+def _draw_metric(draw, label: str, value: float, bounds: tuple[int, int, int, int], accent: str) -> None:
+    draw.rounded_rectangle(bounds, radius=30, fill="#ffffff12", outline="#ffffff22", width=2)
+    left, top, _, _ = bounds
+    draw.text((left + 24, top + 20), label, font=_load_font(26, bold=True), fill="#eff8f7")
+    draw.text((left + 24, top + 62), f"{round(value * 100):+d}%", font=_load_font(42, bold=True), fill=accent)
+
+
+def _draw_chart(draw, snapshot: BiorhythmSnapshot, bounds: tuple[int, int, int, int], label_font) -> None:
+    left, top, right, bottom = bounds
+    draw.rounded_rectangle(bounds, radius=32, fill="#0a162644", outline="#ffffff22", width=2)
+
+    mid_y = top + ((bottom - top) / 2)
+    draw.line((left + 28, mid_y, right - 28, mid_y), fill="#ffffff33", width=2)
+    for fraction in (0.25, 0.75):
+        y = top + ((bottom - top) * fraction)
+        draw.line((left + 28, y, right - 28, y), fill="#ffffff18", width=1)
+
+    points = snapshot.points
+    step_x = (right - left - 80) / max(1, len(points) - 1)
+    chart_height = bottom - top - 120
+
+    def to_xy(index: int, value: float) -> tuple[float, float]:
+        x = left + 40 + (index * step_x)
+        y = top + 60 + ((1 - ((value + 1) / 2)) * chart_height)
+        return x, y
+
+    _draw_series(draw, [to_xy(index, point.physical) for index, point in enumerate(points)], "#ff8a65")
+    _draw_series(draw, [to_xy(index, point.emotional) for index, point in enumerate(points)], "#ffd166")
+    _draw_series(draw, [to_xy(index, point.intellectual) for index, point in enumerate(points)], "#1fa4a5")
+
+    for index, point in enumerate(points):
+        x = left + 40 + (index * step_x)
+        label = point.day.strftime("%d.%m")
+        bbox = draw.textbbox((0, 0), label, font=label_font)
+        draw.text((x - ((bbox[2] - bbox[0]) / 2), bottom - 42), label, font=label_font, fill="#d7efed")
+
+
+def _draw_series(draw, points: Iterable[tuple[float, float]], color: str) -> None:
+    normalized_points = list(points)
+    if len(normalized_points) >= 2:
+        draw.line(normalized_points, fill=color, width=6)
+    for x, y in normalized_points:
+        draw.ellipse((x - 6, y - 6, x + 6, y + 6), fill=color)
+
+
+def _load_font(size: int, bold: bool = False):
+    candidates = _font_candidates(bold)
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            return ImageFont.truetype(str(candidate), size=size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def _font_candidates(bold: bool) -> tuple[Path, ...]:
+    if bold:
+        names = (
+            "C:/Windows/Fonts/segoeuib.ttf",
+            "C:/Windows/Fonts/arialbd.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+        )
+    else:
+        names = (
+            "C:/Windows/Fonts/segoeui.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+        )
+    return tuple(Path(name) for name in names)
+
+
+def _export_png(image) -> bytes:
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()

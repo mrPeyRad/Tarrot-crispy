@@ -24,7 +24,10 @@ def load_env_file(env_path: Path) -> None:
 @dataclass(frozen=True, slots=True)
 class Settings:
     bot_token: str
+    bot_username: str | None
     database_path: Path
+    openai_api_key: str | None
+    openai_model: str
     polling_timeout: int = 30
     request_timeout: int = 40
 
@@ -38,17 +41,27 @@ class Settings:
                 "Не найден BOT_TOKEN. Добавь его в переменные окружения или в файл .env."
             )
 
+        raw_username = os.getenv("BOT_USERNAME", "").strip()
+        bot_username = raw_username or None
+        if bot_username and not bot_username.startswith("@"):
+            bot_username = f"@{bot_username}"
+
         database_path = Path(
             os.getenv("DATABASE_PATH", "bot_data.sqlite3").strip() or "bot_data.sqlite3"
         )
         if not database_path.is_absolute():
             database_path = project_root / database_path
 
+        openai_api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
+        openai_model = os.getenv("OPENAI_MODEL", "gpt-5-mini").strip() or "gpt-5-mini"
         polling_timeout = int(os.getenv("POLLING_TIMEOUT", "30"))
         request_timeout = int(os.getenv("REQUEST_TIMEOUT", "40"))
         return cls(
             bot_token=token,
+            bot_username=bot_username,
             database_path=database_path,
+            openai_api_key=openai_api_key,
+            openai_model=openai_model,
             polling_timeout=polling_timeout,
             request_timeout=request_timeout,
         )

@@ -360,6 +360,15 @@ def draw_relationship_card(deck_key: str = DEFAULT_DECK_KEY) -> CardDraw:
     )
 
 
+def draw_question_card(deck_key: str = DEFAULT_DECK_KEY) -> CardDraw:
+    return CardDraw(
+        position="Вопрос к таро",
+        card=_choose_cards(1)[0],
+        is_reversed=_random_orientation(),
+        deck_key=deck_key,
+    )
+
+
 def evaluate_yes_no(draw: CardDraw) -> tuple[str, str]:
     score = draw.card.yes_weight if not draw.is_reversed else -draw.card.yes_weight
     if score >= 2:
@@ -422,6 +431,17 @@ def format_relationship_caption(draw: CardDraw) -> str:
         f"Положение: {draw.orientation_label}\n"
         f"Ключевые слова: {', '.join(draw.card.keywords)}\n\n"
         f"Динамика между вами сейчас читается так: {draw.meaning}"
+    )
+
+
+def format_question_caption(draw: CardDraw, question: str, interpretation: str) -> str:
+    return (
+        f"Вопрос: {question}\n"
+        f"Карта: {draw.card.name_ru}\n"
+        f"Колода: {get_deck_info(draw.deck_key).name_ru}\n"
+        f"Положение: {draw.orientation_label}\n"
+        f"Ключевые слова: {', '.join(draw.card.keywords)}\n\n"
+        f"{interpretation}"
     )
 
 

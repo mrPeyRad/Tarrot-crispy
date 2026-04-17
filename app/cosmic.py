@@ -39,6 +39,19 @@ class AstroAlert:
     caution: str
 
 
+@dataclass(frozen=True, slots=True)
+class CompatibilityInsight:
+    first: ZodiacSign
+    second: ZodiacSign
+    score: int
+    summary: str
+    score_comment: str
+    first_love_style: str
+    second_love_style: str
+    strength: str
+    growth_zone: str
+
+
 MOON_PHASES: tuple[tuple[float, MoonPhase], ...] = (
     (
         1.5,
@@ -373,6 +386,20 @@ def _compatibility_summary(score: int) -> str:
 
 
 def build_compatibility_report(first: ZodiacSign, second: ZodiacSign) -> str:
+    insight = build_compatibility_insight(first, second)
+    return (
+        f"Совместимость: {insight.first.name} + {insight.second.name}\n\n"
+        f"Процент совместимости: {insight.score}%\n"
+        f"{insight.score_comment}\n\n"
+        f"Динамика пары: {insight.summary}\n"
+        f"{insight.first.name}: {insight.first_love_style}.\n"
+        f"{insight.second.name}: {insight.second_love_style}.\n\n"
+        f"Сильная сторона: {insight.strength}\n"
+        f"Зона роста: {insight.growth_zone}"
+    )
+
+
+def build_compatibility_insight(first: ZodiacSign, second: ZodiacSign) -> CompatibilityInsight:
     if first.name == second.name:
         summary = "Пара одного знака часто понимает друг друга с полуслова, но и слабые места зеркалит без скидок."
         score = 88
@@ -382,15 +409,16 @@ def build_compatibility_report(first: ZodiacSign, second: ZodiacSign) -> str:
 
     first_nature = SIGN_NATURES[first.name]
     second_nature = SIGN_NATURES[second.name]
-    return (
-        f"Совместимость: {first.name} + {second.name}\n\n"
-        f"Процент совместимости: {score}%\n"
-        f"{_compatibility_summary(score)}\n\n"
-        f"Динамика пары: {summary}\n"
-        f"{first.name}: {first_nature.love_style}.\n"
-        f"{second.name}: {second_nature.love_style}.\n\n"
-        f"Сильная сторона: {first_nature.support_style}; {second_nature.support_style}.\n"
-        f"Зона роста: {first_nature.friction_style}; {second_nature.friction_style}."
+    return CompatibilityInsight(
+        first=first,
+        second=second,
+        score=score,
+        summary=summary,
+        score_comment=_compatibility_summary(score),
+        first_love_style=first_nature.love_style,
+        second_love_style=second_nature.love_style,
+        strength=f"{first_nature.support_style}; {second_nature.support_style}.",
+        growth_zone=f"{first_nature.friction_style}; {second_nature.friction_style}.",
     )
 
 
