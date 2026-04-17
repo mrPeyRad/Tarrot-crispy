@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover - depends on optional dependency
 
 
 CANVAS_SIZE = (1080, 1350)
+REMOTE_ART_CACHE_DIR = Path(__file__).resolve().parent.parent / "runtime" / "image-cache"
 RUNE_STROKES: dict[str, tuple[tuple[tuple[float, float], tuple[float, float]], ...]] = {
     "F": (((0.34, 0.10), (0.34, 0.90)), ((0.34, 0.18), (0.72, 0.28)), ((0.34, 0.46), (0.68, 0.54))),
     "U": (((0.34, 0.10), (0.34, 0.90)), ((0.34, 0.10), (0.70, 0.26)), ((0.70, 0.26), (0.70, 0.90))),
@@ -50,6 +51,13 @@ RUNE_STROKES: dict[str, tuple[tuple[tuple[float, float], tuple[float, float]], .
     "D": (((0.28, 0.20), (0.56, 0.50)), ((0.56, 0.50), (0.28, 0.80)), ((0.72, 0.20), (0.44, 0.50)), ((0.44, 0.50), (0.72, 0.80))),
     "O": (((0.50, 0.14), (0.76, 0.40)), ((0.76, 0.40), (0.50, 0.66)), ((0.50, 0.66), (0.24, 0.40)), ((0.24, 0.40), (0.50, 0.14)), ((0.38, 0.68), (0.28, 0.90)), ((0.62, 0.68), (0.72, 0.90))),
 }
+
+
+def configure_share_card_cache(cache_dir: Path | None) -> None:
+    global REMOTE_ART_CACHE_DIR
+    REMOTE_ART_CACHE_DIR = cache_dir or REMOTE_ART_CACHE_DIR
+    REMOTE_ART_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _download_remote_image.cache_clear()
 
 
 def render_tarot_share_card(
@@ -643,6 +651,16 @@ def _load_tarot_art(draw_result: CardDraw):
 
 @lru_cache(maxsize=256)
 def _download_remote_image(url: str):
+    cache_path = _cached_remote_image_path(url)
+    if cache_path.exists():
+        try:
+            return Image.open(cache_path).convert("RGB")
+        except Exception:
+            try:
+                cache_path.unlink()
+            except OSError:
+                pass
+
     try:
         request = Request(url, headers={"User-Agent": "Tarrot-crispy/1.0"})
         with urlopen(request, timeout=3) as response:
@@ -651,9 +669,22 @@ def _download_remote_image(url: str):
         return None
 
     try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = cache_path.with_suffix(".tmp")
+        tmp_path.write_bytes(payload)
+        tmp_path.replace(cache_path)
+    except OSError:
+        pass
+
+    try:
         return Image.open(BytesIO(payload)).convert("RGB")
     except Exception:
         return None
+
+
+def _cached_remote_image_path(url: str) -> Path:
+    digest = sha256(url.encode("utf-8")).hexdigest()
+    return REMOTE_ART_CACHE_DIR / f"{digest}.img"
 
 
 def _build_local_tarot_fallback(draw_result: CardDraw):

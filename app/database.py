@@ -8,6 +8,11 @@ import sqlite3
 from typing import Any
 
 
+SQLITE_BUSY_TIMEOUT_MS = 5000
+SQLITE_CACHE_SIZE_KIB = 8192
+SQLITE_WAL_AUTOCHECKPOINT_PAGES = 1000
+
+
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -75,6 +80,7 @@ class DeliverySubscription:
     minute_local: int
     enabled: bool
     last_delivery_key: str | None
+    next_delivery_at: str | None
     created_at: str
     updated_at: str
 
@@ -86,8 +92,19 @@ class Storage:
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, factory=_ManagedConnection)
+        connection = sqlite3.connect(
+            self.database_path,
+            timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
+            factory=_ManagedConnection,
+        )
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = NORMAL")
+        connection.execute("PRAGMA temp_store = MEMORY")
+        connection.execute(f"PRAGMA cache_size = {-SQLITE_CACHE_SIZE_KIB}")
+        connection.execute(f"PRAGMA wal_autocheckpoint = {SQLITE_WAL_AUTOCHECKPOINT_PAGES}")
         return connection
 
     def _init_schema(self) -> None:
@@ -152,6 +169,7 @@ class Storage:
                     minute_local INTEGER NOT NULL DEFAULT 0,
                     enabled INTEGER NOT NULL DEFAULT 1,
                     last_delivery_key TEXT,
+                    next_delivery_at TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -168,6 +186,18 @@ class Storage:
                 table_name="delivery_subscriptions",
                 column_name="minute_local",
                 column_definition="INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection,
+                table_name="delivery_subscriptions",
+                column_name="next_delivery_at",
+                column_definition="TEXT",
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_delivery_subscriptions_due
+                ON delivery_subscriptions (enabled, next_delivery_at ASC)
+                """
             )
 
     @staticmethod
@@ -609,6 +639,7 @@ class Storage:
         hour_local: int = 9,
         minute_local: int = 0,
         enabled: bool = True,
+        next_delivery_at: str | None = None,
     ) -> None:
         now = _utcnow_iso()
         with self._connect() as connection:
@@ -622,15 +653,17 @@ class Storage:
                     minute_local,
                     enabled,
                     last_delivery_key,
+                    next_delivery_at,
                     created_at,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     chat_id = excluded.chat_id,
                     cadence = excluded.cadence,
                     hour_local = excluded.hour_local,
                     minute_local = excluded.minute_local,
                     enabled = excluded.enabled,
+                    next_delivery_at = excluded.next_delivery_at,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -640,6 +673,7 @@ class Storage:
                     hour_local,
                     minute_local,
                     int(enabled),
+                    next_delivery_at,
                     now,
                     now,
                 ),
@@ -657,6 +691,7 @@ class Storage:
                     minute_local,
                     enabled,
                     last_delivery_key,
+                    next_delivery_at,
                     created_at,
                     updated_at
                 FROM delivery_subscriptions
@@ -676,6 +711,7 @@ class Storage:
             minute_local=int(row["minute_local"]),
             enabled=bool(row["enabled"]),
             last_delivery_key=row["last_delivery_key"],
+            next_delivery_at=row["next_delivery_at"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -692,11 +728,12 @@ class Storage:
                     minute_local,
                     enabled,
                     last_delivery_key,
+                    next_delivery_at,
                     created_at,
                     updated_at
                 FROM delivery_subscriptions
                 WHERE enabled = 1
-                ORDER BY updated_at ASC
+                ORDER BY next_delivery_at ASC, updated_at ASC
                 """
             ).fetchall()
 
@@ -709,22 +746,73 @@ class Storage:
                 minute_local=int(row["minute_local"]),
                 enabled=bool(row["enabled"]),
                 last_delivery_key=row["last_delivery_key"],
+                next_delivery_at=row["next_delivery_at"],
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
             )
             for row in rows
         )
 
-    def update_subscription_delivery(self, user_id: int, delivery_key: str) -> None:
+    def list_due_subscriptions(
+        self,
+        now_utc_iso: str,
+        limit: int = 200,
+    ) -> tuple[DeliverySubscription, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    user_id,
+                    chat_id,
+                    cadence,
+                    hour_local,
+                    minute_local,
+                    enabled,
+                    last_delivery_key,
+                    next_delivery_at,
+                    created_at,
+                    updated_at
+                FROM delivery_subscriptions
+                WHERE enabled = 1
+                  AND next_delivery_at IS NOT NULL
+                  AND next_delivery_at <= ?
+                ORDER BY next_delivery_at ASC, updated_at ASC
+                LIMIT ?
+                """,
+                (now_utc_iso, limit),
+            ).fetchall()
+
+        return tuple(
+            DeliverySubscription(
+                user_id=int(row["user_id"]),
+                chat_id=int(row["chat_id"]),
+                cadence=row["cadence"],
+                hour_local=int(row["hour_local"]),
+                minute_local=int(row["minute_local"]),
+                enabled=bool(row["enabled"]),
+                last_delivery_key=row["last_delivery_key"],
+                next_delivery_at=row["next_delivery_at"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        )
+
+    def update_subscription_delivery(
+        self,
+        user_id: int,
+        delivery_key: str,
+        next_delivery_at: str | None,
+    ) -> None:
         now = _utcnow_iso()
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE delivery_subscriptions
-                SET last_delivery_key = ?, updated_at = ?
+                SET last_delivery_key = ?, next_delivery_at = ?, updated_at = ?
                 WHERE user_id = ?
                 """,
-                (delivery_key, now, user_id),
+                (delivery_key, next_delivery_at, now, user_id),
             )
 
     def delete_subscription(self, user_id: int) -> None:

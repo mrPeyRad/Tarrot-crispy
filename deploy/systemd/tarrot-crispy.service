@@ -1,0 +1,19 @@
+[Unit]
+Description=Tarrot Crispy Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tarotbot
+Group=tarotbot
+WorkingDirectory=/opt/tarrot-crispy
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/tarrot-crispy/.venv/bin/python main.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+UMask=027
+
+[Install]
+WantedBy=multi-user.target

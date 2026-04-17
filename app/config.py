@@ -38,10 +38,12 @@ class Settings:
     bot_description: str
     bot_short_description: str
     database_path: Path
+    image_cache_dir: Path
     openai_api_key: str | None
     openai_model: str
     polling_timeout: int = 30
     request_timeout: int = 40
+    subscription_dispatch_batch_size: int = 200
 
     @classmethod
     def from_env(cls, project_root: Path) -> "Settings":
@@ -73,10 +75,21 @@ class Settings:
         if not database_path.is_absolute():
             database_path = project_root / database_path
 
+        image_cache_dir = Path(
+            os.getenv("IMAGE_CACHE_DIR", "runtime/image-cache").strip()
+            or "runtime/image-cache"
+        )
+        if not image_cache_dir.is_absolute():
+            image_cache_dir = project_root / image_cache_dir
+
         openai_api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
         openai_model = os.getenv("OPENAI_MODEL", "gpt-5-mini").strip() or "gpt-5-mini"
         polling_timeout = int(os.getenv("POLLING_TIMEOUT", "30"))
         request_timeout = int(os.getenv("REQUEST_TIMEOUT", "40"))
+        subscription_dispatch_batch_size = max(
+            1,
+            int(os.getenv("SUBSCRIPTION_DISPATCH_BATCH_SIZE", "200")),
+        )
         return cls(
             bot_token=token,
             bot_username=bot_username,
@@ -84,8 +97,10 @@ class Settings:
             bot_description=bot_description,
             bot_short_description=bot_short_description,
             database_path=database_path,
+            image_cache_dir=image_cache_dir,
             openai_api_key=openai_api_key,
             openai_model=openai_model,
             polling_timeout=polling_timeout,
             request_timeout=request_timeout,
+            subscription_dispatch_batch_size=subscription_dispatch_batch_size,
         )

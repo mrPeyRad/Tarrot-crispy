@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 import logging
 from pathlib import Path
 import re
@@ -27,6 +27,7 @@ from app.horoscope import (
 )
 from app.mystic import ask_magic_ball, draw_rune_of_day, format_magic_ball_reply, format_rune_draw
 from app.share_cards import (
+    configure_share_card_cache,
     render_biorhythm_share_card,
     render_compatibility_share_card,
     render_rune_share_card,
@@ -158,6 +159,7 @@ class TarotHoroscopeBot:
             model=settings.openai_model,
         )
         self._bot_username = settings.bot_username
+        configure_share_card_cache(settings.image_cache_dir)
 
     @classmethod
     def from_project_root(cls, project_root: Path) -> "TarotHoroscopeBot":
@@ -166,15 +168,17 @@ class TarotHoroscopeBot:
     def run(self) -> None:
         self._configure_public_profile()
         self._configure_native_menu()
+        self._ensure_subscription_schedule_state()
         LOGGER.info("Бот запущен и ожидает обновления.")
         offset: int | None = None
 
         while True:
             try:
-                self._dispatch_due_subscriptions()
+                dispatched_due = self._dispatch_due_subscriptions()
+                polling_timeout = 0 if dispatched_due >= self.settings.subscription_dispatch_batch_size else self.settings.polling_timeout
                 updates = self.api.get_updates(
                     offset=offset,
-                    timeout=self.settings.polling_timeout,
+                    timeout=polling_timeout,
                 )
                 for update in updates:
                     offset = int(update["update_id"]) + 1
@@ -727,6 +731,24 @@ class TarotHoroscopeBot:
             self.api.set_my_short_description(self.settings.bot_short_description)
         except TelegramAPIError:
             LOGGER.exception("Не удалось обновить короткое описание бота")
+
+    def _ensure_subscription_schedule_state(self) -> None:
+        for subscription in self.storage.list_active_subscriptions():
+            if subscription.next_delivery_at:
+                continue
+            self.storage.save_subscription(
+                user_id=subscription.user_id,
+                chat_id=subscription.chat_id,
+                cadence=subscription.cadence,
+                hour_local=subscription.hour_local,
+                minute_local=subscription.minute_local,
+                enabled=subscription.enabled,
+                next_delivery_at=self._next_subscription_delivery_iso(
+                    subscription.cadence,
+                    subscription.hour_local,
+                    subscription.minute_local,
+                ),
+            )
 
     @staticmethod
     def _build_native_menu_commands() -> list[dict[str, str]]:
@@ -1351,6 +1373,11 @@ class TarotHoroscopeBot:
             cadence=cadence,
             hour_local=hour_local,
             minute_local=minute_local,
+            next_delivery_at=self._next_subscription_delivery_iso(
+                cadence,
+                hour_local,
+                minute_local,
+            ),
         )
         cadence_label = "каждый день" if cadence == "daily" else "раз в неделю"
         self.api.send_message(
@@ -1378,20 +1405,33 @@ class TarotHoroscopeBot:
             reply_to_message_id=reply_to_message_id,
         )
 
-    def _dispatch_due_subscriptions(self) -> None:
-        now_local = datetime.now().astimezone()
-        for subscription in self.storage.list_active_subscriptions():
-            delivery_key = self._subscription_due_key(subscription, now_local)
-            if delivery_key is None or subscription.last_delivery_key == delivery_key:
-                continue
-
+    def _dispatch_due_subscriptions(self) -> int:
+        now_utc_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        subscriptions = self.storage.list_due_subscriptions(
+            now_utc_iso,
+            limit=self.settings.subscription_dispatch_batch_size,
+        )
+        processed = 0
+        for subscription in subscriptions:
             try:
                 self._send_subscription_bundle(subscription)
-                self.storage.update_subscription_delivery(subscription.user_id, delivery_key)
+                delivered_local = datetime.now().astimezone()
+                self.storage.update_subscription_delivery(
+                    subscription.user_id,
+                    self._subscription_delivery_key(subscription, delivered_local),
+                    self._next_subscription_delivery_iso(
+                        subscription.cadence,
+                        subscription.hour_local,
+                        subscription.minute_local,
+                        reference_local=delivered_local,
+                    ),
+                )
+                processed += 1
             except TelegramAPIError:
                 LOGGER.exception("Не удалось отправить рассылку пользователю %s", subscription.user_id)
             except Exception:
                 LOGGER.exception("Непредвиденная ошибка при рассылке пользователю %s", subscription.user_id)
+        return processed
 
     def _send_subscription_bundle(self, subscription: DeliverySubscription) -> None:
         profile = self.storage.get_user_profile(subscription.user_id)
@@ -1432,25 +1472,59 @@ class TarotHoroscopeBot:
             source="subscription",
         )
 
-    def _subscription_due_key(
-        self,
+    @staticmethod
+    def _subscription_delivery_key(
         subscription: DeliverySubscription,
-        now_local: datetime,
-    ) -> str | None:
-        scheduled_reached = (
-            (now_local.hour, now_local.minute)
-            >= (subscription.hour_local, subscription.minute_local)
-        )
+        delivered_local: datetime,
+    ) -> str:
         if subscription.cadence == "daily":
-            if not scheduled_reached:
-                return None
-            return f"daily:{now_local.date().isoformat()}"
+            return f"daily:{delivered_local.date().isoformat()}"
 
-        if now_local.weekday() == 0 and not scheduled_reached:
-            return None
-
-        year, week_number, _ = now_local.isocalendar()
+        year, week_number, _ = delivered_local.isocalendar()
         return f"weekly:{year}-W{week_number:02d}"
+
+    @staticmethod
+    def _next_subscription_delivery_at(
+        cadence: str,
+        hour_local: int,
+        minute_local: int,
+        reference_local: datetime,
+    ) -> datetime:
+        candidate = reference_local.replace(
+            hour=hour_local,
+            minute=minute_local,
+            second=0,
+            microsecond=0,
+        )
+
+        if cadence == "daily":
+            if candidate <= reference_local:
+                candidate += timedelta(days=1)
+            return candidate
+
+        days_until_monday = (0 - reference_local.weekday()) % 7
+        candidate = (
+            reference_local + timedelta(days=days_until_monday)
+        ).replace(hour=hour_local, minute=minute_local, second=0, microsecond=0)
+        if candidate <= reference_local:
+            candidate += timedelta(days=7)
+        return candidate
+
+    def _next_subscription_delivery_iso(
+        self,
+        cadence: str,
+        hour_local: int,
+        minute_local: int,
+        reference_local: datetime | None = None,
+    ) -> str:
+        local_reference = reference_local or datetime.now().astimezone()
+        next_local = self._next_subscription_delivery_at(
+            cadence,
+            hour_local,
+            minute_local,
+            local_reference,
+        )
+        return next_local.astimezone(timezone.utc).replace(microsecond=0).isoformat()
 
     def _get_user_deck_key(self, user_id: int) -> str:
         profile = self.storage.get_user_profile(user_id)

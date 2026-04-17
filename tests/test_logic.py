@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 import random
 import tempfile
@@ -298,6 +298,7 @@ class StorageTests(unittest.TestCase):
                 cadence="daily",
                 hour_local=9,
                 minute_local=30,
+                next_delivery_at="2026-04-17T06:30:00+00:00",
             )
 
             self.assertEqual(storage.count_tarot_history(1), 1)
@@ -317,6 +318,7 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(subscription.cadence, "daily")
             self.assertEqual(subscription.hour_local, 9)
             self.assertEqual(subscription.minute_local, 30)
+            self.assertEqual(subscription.next_delivery_at, "2026-04-17T06:30:00+00:00")
 
             storage.record_tarot_history(
                 chat_id=100,
@@ -367,6 +369,38 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(card_stats["Солнце"], 1)
             self.assertEqual(storage.get_tarot_card_stats(1, limit=1), (("Луна", 2),))
 
+    def test_storage_uses_wal_and_selects_due_subscriptions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "bot.sqlite3"
+            storage = Storage(db_path)
+
+            storage.save_subscription(
+                user_id=1,
+                chat_id=100,
+                cadence="daily",
+                hour_local=9,
+                minute_local=0,
+                next_delivery_at="2026-04-17T06:00:00+00:00",
+            )
+            storage.save_subscription(
+                user_id=2,
+                chat_id=200,
+                cadence="weekly",
+                hour_local=9,
+                minute_local=0,
+                next_delivery_at="2026-04-18T06:00:00+00:00",
+            )
+
+            due = storage.list_due_subscriptions("2026-04-17T07:00:00+00:00", limit=10)
+            self.assertEqual([item.user_id for item in due], [1])
+
+            with storage._connect() as connection:
+                journal_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                busy_timeout = int(connection.execute("PRAGMA busy_timeout").fetchone()[0])
+
+            self.assertEqual(journal_mode, "wal")
+            self.assertGreaterEqual(busy_timeout, 5000)
+
 
 class BotParsingTests(unittest.TestCase):
     def test_configure_public_profile_pushes_descriptions_to_telegram(self) -> None:
@@ -394,8 +428,10 @@ class BotParsingTests(unittest.TestCase):
             bot_description="Описание для пустого чата",
             bot_short_description="Короткое описание для превью ссылки",
             database_path=Path("bot.sqlite3"),
+            image_cache_dir=Path("runtime/image-cache"),
             openai_api_key=None,
             openai_model="gpt-5-mini",
+            subscription_dispatch_batch_size=200,
         )
         bot.api = FakeAPI()
 
@@ -423,6 +459,18 @@ class BotParsingTests(unittest.TestCase):
         self.assertIsNone(settings.bot_name)
         self.assertEqual(settings.bot_description, DEFAULT_BOT_DESCRIPTION)
         self.assertEqual(settings.bot_short_description, DEFAULT_BOT_SHORT_DESCRIPTION)
+        self.assertEqual(settings.image_cache_dir, project_root / "runtime" / "image-cache")
+        self.assertEqual(settings.subscription_dispatch_batch_size, 200)
+
+    def test_next_subscription_delivery_daily_rolls_forward(self) -> None:
+        reference = datetime(2026, 4, 17, 10, 5, tzinfo=timezone.utc)
+        next_run = TarotHoroscopeBot._next_subscription_delivery_at("daily", 9, 0, reference)
+        self.assertEqual(next_run, datetime(2026, 4, 18, 9, 0, tzinfo=timezone.utc))
+
+    def test_next_subscription_delivery_weekly_can_stay_in_same_week(self) -> None:
+        reference = datetime(2026, 4, 20, 8, 15, tzinfo=timezone.utc)
+        next_run = TarotHoroscopeBot._next_subscription_delivery_at("weekly", 9, 0, reference)
+        self.assertEqual(next_run, datetime(2026, 4, 20, 9, 0, tzinfo=timezone.utc))
 
     def test_build_main_menu_keyboard_is_not_persistent(self) -> None:
         bot = TarotHoroscopeBot.__new__(TarotHoroscopeBot)
