@@ -80,6 +80,7 @@ JOURNAL_TRIGGERS = {"дневник предсказаний", "дневник",
 SUBSCRIBE_TRIGGERS = {"рассылка", "подписка", "подписаться"}
 TAROT_QUESTION_TRIGGERS = {"вопрос к таро", "спросить таро", "таро по вопросу"}
 BIORHYTHM_TRIGGERS = {"биоритмы", "биоритм"}
+MENU_TRIGGERS = {"меню", "главное меню", "меню бота"}
 CANCEL_TRIGGERS = {"отмена"}
 COMMAND_RE = re.compile(r"^/(?P<command>[A-Za-z0-9_]+)(?:@\w+)?(?:\s+(?P<args>.*))?$")
 TIME_RE = re.compile(r"^(?P<hour>\d{1,2}):(?P<minute>\d{2})$")
@@ -121,7 +122,8 @@ MAIN_MENU_KEYBOARD = (
     ("вопрос к таро", "совместимость"),
     ("лунный календарь", "расклад 3 карты"),
     ("биоритмы", "дневник предсказаний"),
-    ("колода", "/help"),
+    ("колода", "меню"),
+    ("/help",),
 )
 
 
@@ -199,7 +201,11 @@ class TarotHoroscopeBot:
             return
 
         if command == "start":
-            self._send_start(chat_id, message_id)
+            self._open_main_menu(chat_id, user_id, message_id)
+            return
+
+        if command == "menu":
+            self._open_main_menu(chat_id, user_id, message_id)
             return
 
         if command == "help":
@@ -301,6 +307,10 @@ class TarotHoroscopeBot:
             self._send_daily_card(chat_id, user_id, message_id)
             return
 
+        if normalized_text in MENU_TRIGGERS:
+            self._open_main_menu(chat_id, user_id, message_id)
+            return
+
         if normalized_text in TAROT_QUESTION_TRIGGERS:
             self._handle_tarot_question(chat_id, user_id, message_id, "")
             return
@@ -377,6 +387,9 @@ class TarotHoroscopeBot:
         if state == "await_sign":
             sign = parse_sign(text)
             if sign is None:
+                if self._normalize_text(text) in MENU_TRIGGERS:
+                    self._open_main_menu(chat_id, user_id, reply_to_message_id)
+                    return True
                 self._ask_for_sign(chat_id, reply_to_message_id, invalid_value=True)
                 return True
 
@@ -421,6 +434,9 @@ class TarotHoroscopeBot:
         if state == "await_card_query":
             matches = search_cards(text)
             if not matches:
+                if self._normalize_text(text) in MENU_TRIGGERS:
+                    self._open_main_menu(chat_id, user_id, reply_to_message_id)
+                    return True
                 self._ask_for_card_name(chat_id, reply_to_message_id, invalid_value=True)
                 return True
 
@@ -441,6 +457,9 @@ class TarotHoroscopeBot:
         if state == "await_compatibility_first":
             sign = parse_sign(text)
             if sign is None:
+                if self._normalize_text(text) in MENU_TRIGGERS:
+                    self._open_main_menu(chat_id, user_id, reply_to_message_id)
+                    return True
                 self._ask_for_sign(chat_id, reply_to_message_id, invalid_value=True)
                 return True
 
@@ -456,6 +475,9 @@ class TarotHoroscopeBot:
         if state == "await_compatibility_second":
             second_sign = parse_sign(text)
             if second_sign is None:
+                if self._normalize_text(text) in MENU_TRIGGERS:
+                    self._open_main_menu(chat_id, user_id, reply_to_message_id)
+                    return True
                 first_sign_name = payload.get("first_sign")
                 self._ask_for_partner_sign(
                     chat_id,
@@ -478,6 +500,9 @@ class TarotHoroscopeBot:
         if state == "await_magic_question":
             question = text.strip()
             if not question:
+                if self._normalize_text(text) in MENU_TRIGGERS:
+                    self._open_main_menu(chat_id, user_id, reply_to_message_id)
+                    return True
                 self._ask_for_magic_question(chat_id, reply_to_message_id, invalid_value=True)
                 return True
 
@@ -488,6 +513,9 @@ class TarotHoroscopeBot:
         if state == "await_tarot_question":
             question = text.strip()
             if not question:
+                if self._normalize_text(text) in MENU_TRIGGERS:
+                    self._open_main_menu(chat_id, user_id, reply_to_message_id)
+                    return True
                 self._ask_for_tarot_question(chat_id, reply_to_message_id, invalid_value=True)
                 return True
 
@@ -498,6 +526,9 @@ class TarotHoroscopeBot:
         if state == "await_birth_date":
             birth_date = parse_birth_date(text)
             if birth_date is None:
+                if self._normalize_text(text) in MENU_TRIGGERS:
+                    self._open_main_menu(chat_id, user_id, reply_to_message_id)
+                    return True
                 self._ask_for_birth_date(chat_id, reply_to_message_id, invalid_value=True)
                 return True
 
@@ -509,6 +540,9 @@ class TarotHoroscopeBot:
         if state == "await_deck_choice":
             deck = parse_deck(text)
             if deck is None:
+                if self._normalize_text(text) in MENU_TRIGGERS:
+                    self._open_main_menu(chat_id, user_id, reply_to_message_id)
+                    return True
                 self._ask_for_deck(chat_id, reply_to_message_id, invalid_value=True)
                 return True
 
@@ -525,6 +559,9 @@ class TarotHoroscopeBot:
         if state == "await_subscription_cadence":
             cadence, hour_local, minute_local = self._parse_subscription_args(text)
             if cadence is None:
+                if self._normalize_text(text) in MENU_TRIGGERS:
+                    self._open_main_menu(chat_id, user_id, reply_to_message_id)
+                    return True
                 self._ask_for_subscription_cadence(chat_id, reply_to_message_id, invalid_value=True)
                 return True
 
@@ -552,6 +589,9 @@ class TarotHoroscopeBot:
         if state == "await_subscription_time":
             hour_local, minute_local = self._parse_subscription_time(text)
             if hour_local is None or minute_local is None:
+                if self._normalize_text(text) in MENU_TRIGGERS:
+                    self._open_main_menu(chat_id, user_id, reply_to_message_id)
+                    return True
                 self._ask_for_subscription_time(chat_id, reply_to_message_id, invalid_value=True)
                 return True
 
@@ -568,6 +608,10 @@ class TarotHoroscopeBot:
             return True
 
         return False
+
+    def _open_main_menu(self, chat_id: int, user_id: int, reply_to_message_id: int) -> None:
+        self.storage.clear_conversation_state(chat_id, user_id)
+        self._send_start(chat_id, reply_to_message_id)
 
     def _send_start(self, chat_id: int, reply_to_message_id: int) -> None:
         caption = (
@@ -620,11 +664,19 @@ class TarotHoroscopeBot:
 
     def _build_main_menu_keyboard(self) -> dict[str, object]:
         return {
-            "keyboard": [list(row) for row in MAIN_MENU_KEYBOARD],
+            "keyboard": self._with_menu_button(MAIN_MENU_KEYBOARD),
             "resize_keyboard": True,
             "is_persistent": True,
             "input_field_placeholder": "Например: карта дня",
         }
+
+    @staticmethod
+    def _with_menu_button(rows: tuple[tuple[str, ...], ...] | list[list[str]]) -> list[list[str]]:
+        keyboard = [list(row) for row in rows]
+        has_menu = any(any(button == "меню" for button in row) for row in keyboard)
+        if not has_menu:
+            keyboard.append(["меню"])
+        return keyboard
 
     def _send_profile(self, chat_id: int, user_id: int, reply_to_message_id: int) -> None:
         profile = self.storage.get_user_profile(user_id)
@@ -1688,7 +1740,7 @@ class TarotHoroscopeBot:
             else "Какой у тебя знак зодиака? Выбери его с клавиатуры или напиши текстом."
         )
         reply_markup = {
-            "keyboard": [list(row) for row in ZODIAC_KEYBOARD],
+            "keyboard": self._with_menu_button(ZODIAC_KEYBOARD),
             "resize_keyboard": True,
             "one_time_keyboard": True,
             "input_field_placeholder": "Например: Овен",
@@ -1713,7 +1765,7 @@ class TarotHoroscopeBot:
             else f"С кем сравнить совместимость для знака {first_sign_name}? Выбери знак с клавиатуры или напиши его текстом."
         )
         reply_markup = {
-            "keyboard": [list(row) for row in ZODIAC_KEYBOARD],
+            "keyboard": self._with_menu_button(ZODIAC_KEYBOARD),
             "resize_keyboard": True,
             "one_time_keyboard": True,
             "input_field_placeholder": "Например: Лев",
@@ -1792,7 +1844,7 @@ class TarotHoroscopeBot:
             f"{deck_list}"
         )
         reply_markup = {
-            "keyboard": deck_rows,
+            "keyboard": self._with_menu_button(deck_rows),
             "resize_keyboard": True,
             "one_time_keyboard": True,
             "input_field_placeholder": "Например: Марсельская классика",
@@ -1816,7 +1868,7 @@ class TarotHoroscopeBot:
             else "Какую рассылку включить: ежедневно или еженедельно?"
         )
         reply_markup = {
-            "keyboard": [list(row) for row in SUBSCRIPTION_KEYBOARD],
+            "keyboard": self._with_menu_button(SUBSCRIPTION_KEYBOARD),
             "resize_keyboard": True,
             "one_time_keyboard": True,
             "input_field_placeholder": "Например: ежедневно",
@@ -1840,7 +1892,7 @@ class TarotHoroscopeBot:
             else "Во сколько присылать рассылку? Напиши время в формате ЧЧ:ММ, например 08:30."
         )
         reply_markup = {
-            "keyboard": [list(row) for row in TIME_KEYBOARD],
+            "keyboard": self._with_menu_button(TIME_KEYBOARD),
             "resize_keyboard": True,
             "one_time_keyboard": True,
             "input_field_placeholder": "Например: 08:30",

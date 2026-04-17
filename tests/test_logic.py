@@ -352,6 +352,18 @@ class StorageTests(unittest.TestCase):
 
 
 class BotParsingTests(unittest.TestCase):
+    def test_with_menu_button_appends_menu_row(self) -> None:
+        self.assertEqual(
+            TarotHoroscopeBot._with_menu_button((("Овен", "Телец"),)),
+            [["Овен", "Телец"], ["меню"]],
+        )
+
+    def test_with_menu_button_does_not_duplicate_menu(self) -> None:
+        self.assertEqual(
+            TarotHoroscopeBot._with_menu_button((("колода", "меню"),)),
+            [["колода", "меню"]],
+        )
+
     def test_parse_subscription_time_supports_hh_mm(self) -> None:
         self.assertEqual(TarotHoroscopeBot._parse_subscription_time("08:30"), (8, 30))
         self.assertEqual(TarotHoroscopeBot._parse_subscription_time(" 19:00 "), (19, 0))
