@@ -352,6 +352,18 @@ class StorageTests(unittest.TestCase):
 
 
 class BotParsingTests(unittest.TestCase):
+    def test_build_main_menu_keyboard_is_not_persistent(self) -> None:
+        bot = TarotHoroscopeBot.__new__(TarotHoroscopeBot)
+        markup = bot._build_main_menu_keyboard()
+        self.assertNotIn("is_persistent", markup)
+
+    def test_build_main_menu_keyboard_does_not_append_extra_menu_row(self) -> None:
+        bot = TarotHoroscopeBot.__new__(TarotHoroscopeBot)
+        markup = bot._build_main_menu_keyboard()
+        self.assertNotIn("меню", [button for row in markup["keyboard"] for button in row])
+        self.assertEqual(markup["keyboard"][-2], ["колода"])
+        self.assertEqual(markup["keyboard"][-1], ["/help"])
+
     def test_with_menu_button_appends_menu_row(self) -> None:
         self.assertEqual(
             TarotHoroscopeBot._with_menu_button((("Овен", "Телец"),)),

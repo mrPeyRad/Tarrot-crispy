@@ -122,7 +122,7 @@ MAIN_MENU_KEYBOARD = (
     ("вопрос к таро", "совместимость"),
     ("лунный календарь", "расклад 3 карты"),
     ("биоритмы", "дневник предсказаний"),
-    ("колода", "меню"),
+    ("колода",),
     ("/help",),
 )
 
@@ -664,9 +664,8 @@ class TarotHoroscopeBot:
 
     def _build_main_menu_keyboard(self) -> dict[str, object]:
         return {
-            "keyboard": self._with_menu_button(MAIN_MENU_KEYBOARD),
+            "keyboard": [list(row) for row in MAIN_MENU_KEYBOARD],
             "resize_keyboard": True,
-            "is_persistent": True,
             "input_field_placeholder": "Например: карта дня",
         }
 
