@@ -1758,7 +1758,7 @@ class TarotHoroscopeBot:
             "keyboard": deck_rows,
             "resize_keyboard": True,
             "one_time_keyboard": True,
-            "input_field_placeholder": "Например: Стилизованный визуал Тота",
+            "input_field_placeholder": "Например: Минималистичный визуал",
         }
         self.api.send_message(
             chat_id,

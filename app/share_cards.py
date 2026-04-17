@@ -1,20 +1,23 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 from typing import Iterable
+from urllib.request import Request, urlopen
 
 from app.biorhythm import BiorhythmSnapshot
 from app.cosmic import CompatibilityInsight
 from app.tarot import CardDraw, get_deck_info
 
 try:
-    from PIL import Image, ImageColor, ImageDraw, ImageFont
+    from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageOps
 except ImportError:  # pragma: no cover - depends on optional dependency
     Image = None  # type: ignore[assignment]
     ImageColor = None  # type: ignore[assignment]
     ImageDraw = None  # type: ignore[assignment]
     ImageFont = None  # type: ignore[assignment]
+    ImageOps = None  # type: ignore[assignment]
 
 
 CANVAS_SIZE = (1080, 1350)
@@ -34,41 +37,31 @@ def render_tarot_share_card(
         secondary=f"#{deck.foreground_hex}",
     )
     draw = ImageDraw.Draw(image)
-    title_font = _load_font(72, bold=True)
-    subtitle_font = _load_font(46, bold=True)
-    body_font = _load_font(36)
-    small_font = _load_font(26)
+    title_font = _load_font(58, bold=True)
+    subtitle_font = _load_font(34, bold=True)
+    body_font = _load_font(28)
+    small_font = _load_font(24)
     tiny_font = _load_font(24)
 
+    _ = body_text
     _draw_header(draw, "Mystic Card", title, bot_username, title_font, small_font)
     _draw_glass_card(draw, (72, 220, 1008, 1240))
 
-    draw.text((108, 270), draw_result.card.name_ru, font=title_font, fill="#fff8ef")
-    orientation_box = (108, 362, 520, 424)
+    art_bounds = (292, 278, 788, 946)
+    _draw_tarot_art(image, draw_result, art_bounds)
+
+    draw.text((108, 990), draw_result.card.name_ru, font=title_font, fill="#fff8ef")
+    orientation_box = (108, 1068, 566, 1130)
     _draw_pill(draw, orientation_box, draw_result.orientation_label.title(), subtitle_font, "#fff8ef", "#00000055")
 
-    keyword_text = " • ".join(draw_result.card.keywords)
-    _draw_wrapped_text(draw, keyword_text, body_font, "#f7f0dd", 108, 460, 864, 2)
+    info_text = f"Колода: {deck.name_ru}"
+    draw.text((108, 1154), info_text, font=small_font, fill="#f7f0dd")
 
-    next_y = 570
     if question:
-        _draw_section_label(draw, "Вопрос", 108, next_y, subtitle_font, small_font)
-        next_y = _draw_wrapped_text(draw, question, body_font, "#fff8ef", 108, next_y + 62, 864, 3) + 26
-
-    _draw_section_label(draw, title, 108, next_y, subtitle_font, small_font)
-    _draw_wrapped_text(
-        draw,
-        body_text,
-        body_font,
-        "#fff8ef",
-        108,
-        next_y + 62,
-        864,
-        9,
-    )
+        _draw_wrapped_text(draw, f"Вопрос: {question}", body_font, "#fff8ef", 108, 1184, 864, 1)
 
     watermark = f"репост из {bot_username}"
-    draw.text((108, 1188), watermark, font=tiny_font, fill="#f8edd2cc")
+    draw.text((108, 1212), watermark, font=tiny_font, fill="#f8edd2cc")
     return _export_png(image)
 
 
@@ -164,8 +157,83 @@ def render_biorhythm_share_card(snapshot: BiorhythmSnapshot, bot_username: str) 
 
 
 def _require_pillow() -> None:
-    if Image is None or ImageColor is None or ImageDraw is None or ImageFont is None:
+    if Image is None or ImageColor is None or ImageDraw is None or ImageFont is None or ImageOps is None:
         raise RuntimeError("Для красивых карточек нужен Pillow.")
+
+
+def _draw_tarot_art(image, draw_result: CardDraw, bounds: tuple[int, int, int, int]) -> None:
+    left, top, right, bottom = bounds
+    width = right - left
+    height = bottom - top
+    shadow = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    shadow_draw = ImageDraw.Draw(shadow)
+    shadow_draw.rounded_rectangle(
+        (left + 14, top + 18, right + 14, bottom + 18),
+        radius=36,
+        fill=(0, 0, 0, 72),
+    )
+    image.alpha_composite(shadow)
+
+    art = _load_tarot_art(draw_result)
+    art = ImageOps.fit(art, (width, height), method=_resampling_filter())
+    if draw_result.is_reversed:
+        art = art.rotate(180, expand=False)
+
+    mask = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, width, height), radius=36, fill=255)
+    image.paste(art, (left, top), mask)
+
+    border = ImageDraw.Draw(image)
+    border.rounded_rectangle(bounds, radius=36, outline="#fff3df", width=5)
+
+
+def _load_tarot_art(draw_result: CardDraw):
+    candidates = [draw_result.image_url]
+    if draw_result.card.image_url not in candidates:
+        candidates.append(draw_result.card.image_url)
+
+    for candidate in candidates:
+        image = _download_remote_image(candidate)
+        if image is not None:
+            return image
+    return _build_local_tarot_fallback(draw_result)
+
+
+@lru_cache(maxsize=256)
+def _download_remote_image(url: str):
+    try:
+        request = Request(url, headers={"User-Agent": "Tarrot-crispy/1.0"})
+        with urlopen(request, timeout=3) as response:
+            payload = response.read()
+    except Exception:
+        return None
+
+    try:
+        return Image.open(BytesIO(payload)).convert("RGB")
+    except Exception:
+        return None
+
+
+def _build_local_tarot_fallback(draw_result: CardDraw):
+    deck = get_deck_info(draw_result.deck_key)
+    card = Image.new("RGB", (720, 1080), f"#{deck.background_hex}")
+    draw = ImageDraw.Draw(card)
+    border_color = f"#{deck.foreground_hex}"
+    draw.rounded_rectangle((28, 28, 692, 1052), radius=36, fill="#fffaf2", outline=border_color, width=10)
+    draw.rounded_rectangle((64, 76, 656, 1004), radius=26, outline=border_color, width=4)
+    draw.text((96, 124), "TAROT", font=_load_font(40, bold=True), fill=border_color)
+    _draw_wrapped_text(draw, draw_result.card.name_ru, _load_font(48, bold=True), border_color, 96, 220, 528, 4)
+    _draw_wrapped_text(
+        draw,
+        ", ".join(draw_result.card.keywords),
+        _load_font(30),
+        border_color,
+        96,
+        500,
+        528,
+        5,
+    )
+    return card
 
 
 def _create_canvas(primary: str, secondary: str):
@@ -374,6 +442,13 @@ def _font_candidates(bold: bool) -> tuple[Path, ...]:
             "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
         )
     return tuple(Path(name) for name in names)
+
+
+def _resampling_filter():
+    resampling = getattr(Image, "Resampling", None)
+    if resampling is not None:
+        return resampling.LANCZOS
+    return Image.LANCZOS
 
 
 def _export_png(image) -> bytes:

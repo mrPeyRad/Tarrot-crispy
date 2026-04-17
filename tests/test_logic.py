@@ -5,6 +5,7 @@ from pathlib import Path
 import random
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from app.ai import build_fallback_question_reading
 from app.bot import TarotHoroscopeBot
@@ -41,6 +42,8 @@ from app.tarot import (
     search_cards,
 )
 
+from PIL import Image
+
 
 class TarotTests(unittest.TestCase):
     def test_deck_has_full_78_cards(self) -> None:
@@ -66,8 +69,8 @@ class TarotTests(unittest.TestCase):
         self.assertTrue(all(draw.deck_key == "minimal" for draw in spread))
 
     def test_card_guide_uses_selected_deck_name(self) -> None:
-        guide = format_card_guide(TAROT_DECK[0], deck_key="thoth")
-        self.assertIn("Стилизованный визуал Тота", guide)
+        guide = format_card_guide(TAROT_DECK[0], deck_key="minimal")
+        self.assertIn("Минималистичный визуал", guide)
         self.assertIn("Прямое положение:", guide)
         self.assertIn("Перевёрнутое положение:", guide)
 
@@ -76,16 +79,16 @@ class TarotTests(unittest.TestCase):
         self.assertIn("Ответ:", caption)
 
     def test_parse_deck_supports_aliases(self) -> None:
-        self.assertEqual(parse_deck("тота").key, "thoth")
         self.assertEqual(parse_deck("минималистичная").key, "minimal")
+        self.assertIsNone(parse_deck("тота"))
         self.assertIsNone(parse_deck("неизвестная колода"))
 
-    def test_custom_deck_uses_generated_visual_url(self) -> None:
+    def test_custom_deck_uses_real_card_image_url(self) -> None:
         url = build_card_image_url(TAROT_DECK[0], "minimal")
-        self.assertIn("placehold.co", url)
+        self.assertEqual(url, TAROT_DECK[0].image_url)
 
     def test_weekly_card_caption_mentions_week(self) -> None:
-        caption = format_weekly_caption(draw_weekly_card(deck_key="thoth"))
+        caption = format_weekly_caption(draw_weekly_card(deck_key="minimal"))
         self.assertIn("Карта недели", caption)
 
     def test_question_caption_contains_question_and_card_name(self) -> None:
@@ -168,7 +171,8 @@ class BiorhythmTests(unittest.TestCase):
 class ShareCardTests(unittest.TestCase):
     def test_tarot_share_card_renders_png(self) -> None:
         draw = CardDraw(position="Карта дня", card=TAROT_DECK[0], is_reversed=False, deck_key="minimal")
-        png = render_tarot_share_card(draw, "Карта дня", "Смелее смотри в новое.", "@test_bot")
+        with patch("app.share_cards._load_tarot_art", return_value=Image.new("RGB", (320, 640), "#ffffff")):
+            png = render_tarot_share_card(draw, "Карта дня", "Смелее смотри в новое.", "@test_bot")
         self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
 
     def test_compatibility_share_card_renders_png(self) -> None:

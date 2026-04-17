@@ -83,20 +83,11 @@ DECKS: dict[str, TarotDeckInfo] = {
         background_hex="e9d6b0",
         foreground_hex="513729",
     ),
-    "thoth": TarotDeckInfo(
-        key="thoth",
-        name_en="Thoth",
-        name_ru="Стилизованный визуал Тота",
-        description="Тёмная геометричная тема с акцентом на золото и более мистическое настроение.",
-        aliases=("тот", "тота", "thoth", "crowley", "кроули"),
-        background_hex="1c2540",
-        foreground_hex="f2c66d",
-    ),
     "minimal": TarotDeckInfo(
         key="minimal",
         name_en="Minimal",
-        name_ru="Минималистичная колода",
-        description="Светлая лаконичная тема с чистым фоном и спокойными акцентами.",
+        name_ru="Минималистичный визуал",
+        description="Светлая лаконичная тема с чистым фоном. Пока использует классические изображения карт.",
         aliases=("минимал", "минималистичная", "minimal", "simple", "чистая"),
         background_hex="f8f5ef",
         foreground_hex="364152",
@@ -270,15 +261,10 @@ def parse_deck(query: str) -> TarotDeckInfo | None:
 
 
 def build_card_image_url(card: TarotCard, deck_key: str = DEFAULT_DECK_KEY) -> str:
-    deck = get_deck_info(deck_key)
-    if deck.key == DEFAULT_DECK_KEY:
-        return card.image_url
-
-    text = quote(f"{deck.name_en}\n{card.name_en}\n{card.name_ru}")
-    return (
-        f"https://placehold.co/720x1200/{deck.background_hex}/{deck.foreground_hex}.png"
-        f"?text={text}"
-    )
+    _ = deck_key
+    # Пока у альтернативных визуалов нет полноценного пакета из 78 изображений,
+    # используем настоящую карту Rider-Waite вместо текстового плейсхолдера.
+    return card.image_url
 
 
 def get_card_by_query(query: str) -> TarotCard | None:
