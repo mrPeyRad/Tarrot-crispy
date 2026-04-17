@@ -28,6 +28,34 @@ class MagicBallReply:
     mood: str
 
 
+RUNE_SYMBOLS: dict[str, str] = {
+    "F": "ᚠ",
+    "U": "ᚢ",
+    "Th": "ᚦ",
+    "A": "ᚨ",
+    "R": "ᚱ",
+    "K": "ᚲ",
+    "G": "ᚷ",
+    "W": "ᚹ",
+    "H": "ᚺ",
+    "N": "ᚾ",
+    "I": "ᛁ",
+    "J": "ᛃ",
+    "Ei": "ᛇ",
+    "P": "ᛈ",
+    "Z": "ᛉ",
+    "S": "ᛋ",
+    "T": "ᛏ",
+    "B": "ᛒ",
+    "E": "ᛖ",
+    "M": "ᛗ",
+    "L": "ᛚ",
+    "Ng": "ᛜ",
+    "D": "ᛞ",
+    "O": "ᛟ",
+}
+
+
 RUNES: tuple[Rune, ...] = (
     Rune("Феху", "F", "ресурсы и приток энергии", "смотри, куда реально уходит твоя сила, время и внимание"),
     Rune("Уруз", "U", "сила, выносливость и телесный импульс", "делай ставку на действие, а не на долгое раскачивание"),
@@ -74,10 +102,15 @@ def draw_rune_of_day(user_id: int, for_day: date | None = None) -> RuneDraw:
     return RuneDraw(rune=rng.choice(RUNES), for_day=current_day)
 
 
+def get_rune_symbol(rune: Rune) -> str:
+    return RUNE_SYMBOLS.get(rune.transliteration, rune.transliteration)
+
+
 def format_rune_draw(draw: RuneDraw) -> str:
+    symbol = get_rune_symbol(draw.rune)
     return (
         f"Руна дня на {format_date_ru(draw.for_day)}\n\n"
-        f"{draw.rune.name} ({draw.rune.transliteration})\n"
+        f"{draw.rune.name} {symbol} ({draw.rune.transliteration})\n"
         f"Тема: {draw.rune.theme}.\n"
         f"Совет: {draw.rune.advice}."
     )

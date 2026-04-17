@@ -29,6 +29,7 @@ from app.mystic import ask_magic_ball, draw_rune_of_day, format_magic_ball_reply
 from app.share_cards import (
     render_biorhythm_share_card,
     render_compatibility_share_card,
+    render_rune_share_card,
     render_tarot_share_card,
 )
 from app.tarot import (
@@ -1001,10 +1002,23 @@ class TarotHoroscopeBot:
             summary=draw.rune.theme,
             details={"rune": draw.rune.name},
         )
-        self.api.send_message(
+        try:
+            card_bytes = render_rune_share_card(draw, self._get_bot_username())
+        except Exception:
+            LOGGER.exception("Не удалось собрать карточку руны")
+            self.api.send_message(
+                chat_id,
+                message,
+                reply_to_message_id=reply_to_message_id,
+            )
+            return
+
+        self.api.send_photo(
             chat_id,
-            message,
+            caption=message,
             reply_to_message_id=reply_to_message_id,
+            photo_bytes=card_bytes,
+            filename="rune-card.png",
         )
 
     def _handle_magic_ball(

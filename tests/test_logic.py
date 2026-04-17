@@ -19,10 +19,11 @@ from app.cosmic import (
 )
 from app.database import Storage
 from app.horoscope import build_daily_horoscope, build_weekly_horoscope, parse_sign
-from app.mystic import MAGIC_BALL_REPLIES, ask_magic_ball, draw_rune_of_day, format_rune_draw
+from app.mystic import MAGIC_BALL_REPLIES, ask_magic_ball, draw_rune_of_day, format_rune_draw, get_rune_symbol
 from app.share_cards import (
     render_biorhythm_share_card,
     render_compatibility_share_card,
+    render_rune_share_card,
     render_tarot_share_card,
 )
 from app.tarot import (
@@ -176,6 +177,12 @@ class MysticTests(unittest.TestCase):
         self.assertEqual(first.rune.name, second.rune.name)
         self.assertIn(first.rune.name, format_rune_draw(first))
 
+    def test_get_rune_symbol_returns_elder_futhark_glyph(self) -> None:
+        draw = draw_rune_of_day(user_id=77, for_day=date(2026, 4, 17))
+        symbol = get_rune_symbol(draw.rune)
+        self.assertEqual(len(symbol), 1)
+        self.assertIn(symbol, format_rune_draw(draw))
+
     def test_magic_ball_returns_known_answer(self) -> None:
         reply = ask_magic_ball("Получится ли?", rng=random.Random(1))
         self.assertIn(reply.answer, {item.answer for item in MAGIC_BALL_REPLIES})
@@ -208,6 +215,11 @@ class ShareCardTests(unittest.TestCase):
     def test_biorhythm_share_card_renders_png(self) -> None:
         snapshot = build_biorhythm_snapshot(date(1996, 8, 14), target_date=date(2026, 4, 17))
         png = render_biorhythm_share_card(snapshot, "@test_bot")
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+
+    def test_rune_share_card_renders_png(self) -> None:
+        draw = draw_rune_of_day(user_id=77, for_day=date(2026, 4, 17))
+        png = render_rune_share_card(draw, "@test_bot")
         self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
 
 

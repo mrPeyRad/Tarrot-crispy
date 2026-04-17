@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
+import random
 from typing import Iterable
 from urllib.request import Request, urlopen
 
 from app.biorhythm import BiorhythmSnapshot
 from app.cosmic import CompatibilityInsight
+from app.mystic import RuneDraw
 from app.tarot import CardDraw, get_deck_info
 
 try:
@@ -21,6 +24,32 @@ except ImportError:  # pragma: no cover - depends on optional dependency
 
 
 CANVAS_SIZE = (1080, 1350)
+RUNE_STROKES: dict[str, tuple[tuple[tuple[float, float], tuple[float, float]], ...]] = {
+    "F": (((0.34, 0.10), (0.34, 0.90)), ((0.34, 0.18), (0.72, 0.28)), ((0.34, 0.46), (0.68, 0.54))),
+    "U": (((0.34, 0.10), (0.34, 0.90)), ((0.34, 0.10), (0.70, 0.26)), ((0.70, 0.26), (0.70, 0.90))),
+    "Th": (((0.34, 0.10), (0.34, 0.90)), ((0.34, 0.20), (0.72, 0.34)), ((0.72, 0.34), (0.34, 0.56))),
+    "A": (((0.34, 0.10), (0.34, 0.90)), ((0.34, 0.18), (0.74, 0.30)), ((0.34, 0.44), (0.72, 0.58)), ((0.34, 0.44), (0.58, 0.34))),
+    "R": (((0.34, 0.10), (0.34, 0.90)), ((0.34, 0.18), (0.72, 0.30)), ((0.72, 0.30), (0.34, 0.56)), ((0.34, 0.56), (0.76, 0.90))),
+    "K": (((0.68, 0.12), (0.34, 0.50)), ((0.34, 0.50), (0.68, 0.88))),
+    "G": (((0.28, 0.18), (0.72, 0.82)), ((0.72, 0.18), (0.28, 0.82))),
+    "W": (((0.34, 0.10), (0.34, 0.90)), ((0.34, 0.18), (0.72, 0.38)), ((0.72, 0.38), (0.34, 0.58))),
+    "H": (((0.30, 0.12), (0.30, 0.88)), ((0.70, 0.12), (0.70, 0.88)), ((0.30, 0.30), (0.70, 0.70))),
+    "N": (((0.36, 0.10), (0.36, 0.90)), ((0.68, 0.18), (0.30, 0.74))),
+    "I": (((0.50, 0.10), (0.50, 0.90)),),
+    "J": (((0.32, 0.26), (0.56, 0.12)), ((0.56, 0.12), (0.74, 0.34)), ((0.68, 0.70), (0.42, 0.88)), ((0.42, 0.88), (0.24, 0.64))),
+    "Ei": (((0.50, 0.10), (0.50, 0.90)), ((0.50, 0.34), (0.72, 0.18)), ((0.50, 0.52), (0.74, 0.68)), ((0.50, 0.36), (0.28, 0.52)), ((0.50, 0.56), (0.30, 0.72))),
+    "P": (((0.34, 0.10), (0.34, 0.90)), ((0.34, 0.20), (0.72, 0.34)), ((0.72, 0.34), (0.34, 0.56))),
+    "Z": (((0.50, 0.12), (0.50, 0.90)), ((0.50, 0.18), (0.26, 0.42)), ((0.50, 0.18), (0.74, 0.42))),
+    "S": (((0.32, 0.18), (0.68, 0.38)), ((0.68, 0.38), (0.42, 0.56)), ((0.42, 0.56), (0.72, 0.84))),
+    "T": (((0.50, 0.10), (0.50, 0.90)), ((0.50, 0.10), (0.24, 0.34)), ((0.50, 0.10), (0.76, 0.34))),
+    "B": (((0.34, 0.10), (0.34, 0.90)), ((0.34, 0.16), (0.70, 0.30)), ((0.70, 0.30), (0.34, 0.50)), ((0.34, 0.50), (0.70, 0.66)), ((0.70, 0.66), (0.34, 0.86))),
+    "E": (((0.30, 0.10), (0.30, 0.90)), ((0.70, 0.10), (0.70, 0.90)), ((0.30, 0.10), (0.70, 0.46)), ((0.30, 0.54), (0.70, 0.90))),
+    "M": (((0.30, 0.90), (0.30, 0.10)), ((0.70, 0.90), (0.70, 0.10)), ((0.30, 0.10), (0.50, 0.38)), ((0.50, 0.38), (0.70, 0.10)), ((0.30, 0.50), (0.50, 0.72)), ((0.50, 0.72), (0.70, 0.50))),
+    "L": (((0.34, 0.10), (0.34, 0.90)), ((0.34, 0.10), (0.74, 0.46))),
+    "Ng": (((0.50, 0.14), (0.74, 0.38)), ((0.74, 0.38), (0.50, 0.62)), ((0.50, 0.62), (0.26, 0.38)), ((0.26, 0.38), (0.50, 0.14))),
+    "D": (((0.28, 0.20), (0.56, 0.50)), ((0.56, 0.50), (0.28, 0.80)), ((0.72, 0.20), (0.44, 0.50)), ((0.44, 0.50), (0.72, 0.80))),
+    "O": (((0.50, 0.14), (0.76, 0.40)), ((0.76, 0.40), (0.50, 0.66)), ((0.50, 0.66), (0.24, 0.40)), ((0.24, 0.40), (0.50, 0.14)), ((0.38, 0.68), (0.28, 0.90)), ((0.62, 0.68), (0.72, 0.90))),
+}
 
 
 def render_tarot_share_card(
@@ -154,6 +183,194 @@ def render_biorhythm_share_card(snapshot: BiorhythmSnapshot, bot_username: str) 
     _draw_chart(draw, snapshot, chart_bounds, small_font)
     draw.text((108, 1188), f"цикл дня • {bot_username}", font=tiny_font, fill="#d7efedcc")
     return _export_png(image)
+
+
+def render_rune_share_card(draw_result: RuneDraw, bot_username: str) -> bytes:
+    _require_pillow()
+    image = _create_canvas(primary="#130b08", secondary="#6a4120")
+    draw = ImageDraw.Draw(image)
+    title_font = _load_font(68, bold=True)
+    subtitle_font = _load_font(40, bold=True)
+    small_font = _load_font(26)
+    tiny_font = _load_font(24)
+
+    _draw_header(draw, "Ancient Rune", "Руна дня", bot_username, title_font, small_font)
+    _draw_glass_card(draw, (72, 220, 1008, 1240))
+    _draw_rune_tablet(image, draw_result, (208, 286, 872, 884))
+
+    draw.text((108, 942), draw_result.rune.name, font=title_font, fill="#f7ecd2")
+    draw.text(
+        (108, 1018),
+        f"Звук: {draw_result.rune.transliteration}",
+        font=subtitle_font,
+        fill="#f0d4a6",
+    )
+
+    next_y = _draw_wrapped_text(
+        draw,
+        f"Тема: {draw_result.rune.theme}.",
+        _load_font(28),
+        "#f5e9d3",
+        108,
+        1086,
+        864,
+        1,
+    ) + 16
+    _draw_wrapped_text(
+        draw,
+        f"Совет: {draw_result.rune.advice}.",
+        _load_font(28),
+        "#f5e9d3",
+        108,
+        next_y,
+        864,
+        2,
+    )
+    draw.text((108, 1218), f"древний знак дня • {bot_username}", font=tiny_font, fill="#ead6b6bb")
+    return _export_png(image)
+
+
+def _draw_rune_tablet(image, draw_result: RuneDraw, bounds: tuple[int, int, int, int]) -> None:
+    left, top, right, bottom = bounds
+    width = right - left
+    height = bottom - top
+    seed = int.from_bytes(
+        sha256(f"{draw_result.rune.name}:{draw_result.for_day.isoformat()}".encode("utf-8")).digest()[:8],
+        byteorder="big",
+    )
+    rng = random.Random(seed)
+
+    shadow = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    shadow_draw = ImageDraw.Draw(shadow)
+    shadow_draw.rounded_rectangle(
+        (left + 18, top + 20, right + 18, bottom + 20),
+        radius=48,
+        fill=(0, 0, 0, 92),
+    )
+    image.alpha_composite(shadow)
+
+    panel = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    panel_draw = ImageDraw.Draw(panel)
+    panel_draw.rounded_rectangle(
+        (0, 0, width - 1, height - 1),
+        radius=48,
+        fill=(169, 142, 102, 255),
+        outline=(239, 216, 176, 235),
+        width=6,
+    )
+    panel_draw.rounded_rectangle(
+        (18, 18, width - 19, height - 19),
+        radius=38,
+        outline=(109, 79, 48, 190),
+        width=3,
+    )
+
+    _decorate_rune_tablet(panel_draw, width, height, rng)
+    _draw_rune_symbol(panel_draw, draw_result, width, height)
+
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    overlay.paste(panel, (left, top), panel)
+    image.alpha_composite(overlay)
+
+
+def _decorate_rune_tablet(panel_draw, width: int, height: int, rng: random.Random) -> None:
+    for _ in range(220):
+        x = rng.randint(28, width - 28)
+        y = rng.randint(28, height - 28)
+        radius = rng.randint(1, 3)
+        shade = rng.randint(122, 178)
+        alpha = rng.randint(28, 72)
+        panel_draw.ellipse(
+            (x - radius, y - radius, x + radius, y + radius),
+            fill=(shade, shade - 16, max(0, shade - 34), alpha),
+        )
+
+    for _ in range(7):
+        start_x = rng.randint(52, width - 180)
+        start_y = rng.randint(64, height - 180)
+        segments = [(start_x, start_y)]
+        for _ in range(rng.randint(2, 4)):
+            prev_x, prev_y = segments[-1]
+            segments.append(
+                (
+                    max(34, min(width - 34, prev_x + rng.randint(-96, 96))),
+                    max(34, min(height - 34, prev_y + rng.randint(18, 110))),
+                )
+            )
+        panel_draw.line(segments, fill=(92, 63, 35, 120), width=rng.randint(2, 4), joint="curve")
+
+    for inset in (52, 92):
+        panel_draw.rounded_rectangle(
+            (inset, inset, width - inset, height - inset),
+            radius=max(16, 42 - (inset // 4)),
+            outline=(245, 224, 186, 60 if inset == 52 else 40),
+            width=2,
+        )
+
+
+def _draw_rune_symbol(panel_draw, draw_result: RuneDraw, width: int, height: int) -> None:
+    subtitle_font = _load_font(24, bold=True)
+    halo_bounds = (width * 0.19, height * 0.15, width * 0.81, height * 0.77)
+    panel_draw.ellipse(halo_bounds, outline=(244, 223, 182, 42), width=4)
+    panel_draw.ellipse(
+        (halo_bounds[0] + 26, halo_bounds[1] + 26, halo_bounds[2] - 26, halo_bounds[3] - 26),
+        outline=(94, 64, 35, 64),
+        width=2,
+    )
+
+    strokes = RUNE_STROKES.get(draw_result.rune.transliteration, ())
+    symbol_bounds = (width * 0.20, height * 0.16, width * 0.80, height * 0.76)
+    _draw_rune_strokes(panel_draw, strokes, symbol_bounds)
+
+    label = draw_result.rune.transliteration.upper()
+    label_bbox = panel_draw.textbbox((0, 0), label, font=subtitle_font)
+    label_width = label_bbox[2] - label_bbox[0]
+    label_x = (width - label_width) / 2
+    panel_draw.text((label_x, height - 96), label, font=subtitle_font, fill=(86, 57, 31, 255))
+
+
+def _draw_rune_strokes(
+    panel_draw,
+    strokes: tuple[tuple[tuple[float, float], tuple[float, float]], ...],
+    bounds: tuple[float, float, float, float],
+) -> None:
+    left, top, right, bottom = bounds
+    width = right - left
+    height = bottom - top
+    if not strokes:
+        return
+
+    shadow_points = []
+    main_points = []
+    highlight_points = []
+    for (start_x, start_y), (end_x, end_y) in strokes:
+        shadow_points.append(
+            (
+                (left + (start_x * width) + 8, top + (start_y * height) + 10),
+                (left + (end_x * width) + 8, top + (end_y * height) + 10),
+            )
+        )
+        main_points.append(
+            (
+                (left + (start_x * width), top + (start_y * height)),
+                (left + (end_x * width), top + (end_y * height)),
+            )
+        )
+        highlight_points.append(
+            (
+                (left + (start_x * width) + 1, top + (start_y * height) - 3),
+                (left + (end_x * width) + 1, top + (end_y * height) - 3),
+            )
+        )
+
+    for start, end in shadow_points:
+        panel_draw.line((start, end), fill=(63, 39, 18, 170), width=26)
+    for start, end in main_points:
+        panel_draw.line((start, end), fill=(99, 63, 32, 255), width=24)
+    for start, end in main_points:
+        panel_draw.line((start, end), fill=(242, 207, 133, 255), width=16)
+    for start, end in highlight_points:
+        panel_draw.line((start, end), fill=(255, 240, 198, 125), width=6)
 
 
 def _require_pillow() -> None:
