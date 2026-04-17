@@ -175,13 +175,40 @@ def _draw_tarot_art(image, draw_result: CardDraw, bounds: tuple[int, int, int, i
     image.alpha_composite(shadow)
 
     art = _load_tarot_art(draw_result)
-    art = ImageOps.fit(art, (width, height), method=_resampling_filter())
     if draw_result.is_reversed:
         art = art.rotate(180, expand=False)
+    art = art.convert("RGBA")
 
-    mask = Image.new("L", (width, height), 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, width, height), radius=36, fill=255)
-    image.paste(art, (left, top), mask)
+    panel = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    panel_draw = ImageDraw.Draw(panel)
+    frame_fill = (247, 239, 225, 245)
+    frame_outline = (255, 243, 223, 255)
+    inner_outline = (214, 191, 150, 235)
+    panel_draw.rounded_rectangle((0, 0, width - 1, height - 1), radius=36, fill=frame_fill, outline=frame_outline, width=5)
+    panel_draw.rounded_rectangle((14, 14, width - 15, height - 15), radius=28, outline=inner_outline, width=2)
+
+    padding = 26
+    art = ImageOps.contain(
+        art,
+        (width - (padding * 2), height - (padding * 2)),
+        method=_resampling_filter(),
+    )
+    art_left = (width - art.width) // 2
+    art_top = (height - art.height) // 2
+
+    art_shadow = Image.new("RGBA", panel.size, (0, 0, 0, 0))
+    art_shadow_draw = ImageDraw.Draw(art_shadow)
+    art_shadow_draw.rounded_rectangle(
+        (art_left + 10, art_top + 14, art_left + art.width + 10, art_top + art.height + 14),
+        radius=24,
+        fill=(0, 0, 0, 38),
+    )
+    panel.alpha_composite(art_shadow)
+    panel.alpha_composite(art, dest=(art_left, art_top))
+
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    overlay.paste(panel, (left, top), panel)
+    image.alpha_composite(overlay)
 
     border = ImageDraw.Draw(image)
     border.rounded_rectangle(bounds, radius=36, outline="#fff3df", width=5)
