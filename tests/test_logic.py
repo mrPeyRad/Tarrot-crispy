@@ -6,6 +6,7 @@ import random
 import tempfile
 import unittest
 
+from app.bot import TarotHoroscopeBot
 from app.cosmic import (
     build_compatibility_report,
     build_daily_astro_alert,
@@ -177,7 +178,13 @@ class StorageTests(unittest.TestCase):
                 summary="Дневной прогноз",
                 source="manual",
             )
-            storage.save_subscription(user_id=1, chat_id=100, cadence="daily", hour_local=9)
+            storage.save_subscription(
+                user_id=1,
+                chat_id=100,
+                cadence="daily",
+                hour_local=9,
+                minute_local=30,
+            )
 
             self.assertEqual(storage.count_tarot_history(1), 1)
             recent_history = storage.get_recent_tarot_history(1, limit=1)
@@ -195,6 +202,76 @@ class StorageTests(unittest.TestCase):
             self.assertIsNotNone(subscription)
             self.assertEqual(subscription.cadence, "daily")
             self.assertEqual(subscription.hour_local, 9)
+            self.assertEqual(subscription.minute_local, 30)
+
+            storage.record_tarot_history(
+                chat_id=100,
+                user_id=1,
+                spread_type="weekly",
+                deck_key="minimal",
+                cards_payload=[
+                    {
+                        "position": "Карта недели",
+                        "card_id": "major-18",
+                        "name_ru": "Луна",
+                        "is_reversed": False,
+                        "deck_key": "minimal",
+                    },
+                    {
+                        "position": "Подсказка",
+                        "card_id": "major-19",
+                        "name_ru": "Солнце",
+                        "is_reversed": False,
+                        "deck_key": "minimal",
+                    },
+                ],
+            )
+            storage.record_journal_entry(
+                chat_id=100,
+                user_id=1,
+                entry_type="tarot-weekly",
+                title="Карта недели: Луна",
+                summary="Недельный расклад",
+                source="subscription",
+            )
+
+            active_subscriptions = storage.list_active_subscriptions()
+            self.assertEqual(len(active_subscriptions), 1)
+            self.assertEqual(active_subscriptions[0].minute_local, 30)
+
+            source_stats = dict(storage.get_journal_source_stats(1))
+            self.assertEqual(source_stats["manual"], 1)
+            self.assertEqual(source_stats["subscription"], 1)
+
+            current_month = storage.get_recent_journal_entries(1, limit=1)[0].created_at[:7]
+            month_source_stats = dict(storage.get_journal_source_stats(1, month_prefix=current_month))
+            self.assertEqual(month_source_stats["manual"], 1)
+            self.assertEqual(month_source_stats["subscription"], 1)
+
+            card_stats = dict(storage.get_tarot_card_stats(1))
+            self.assertEqual(card_stats["Луна"], 2)
+            self.assertEqual(card_stats["Солнце"], 1)
+            self.assertEqual(storage.get_tarot_card_stats(1, limit=1), (("Луна", 2),))
+
+
+class BotParsingTests(unittest.TestCase):
+    def test_parse_subscription_time_supports_hh_mm(self) -> None:
+        self.assertEqual(TarotHoroscopeBot._parse_subscription_time("08:30"), (8, 30))
+        self.assertEqual(TarotHoroscopeBot._parse_subscription_time(" 19:00 "), (19, 0))
+
+    def test_parse_subscription_time_rejects_invalid_values(self) -> None:
+        self.assertEqual(TarotHoroscopeBot._parse_subscription_time("24:00"), (None, None))
+        self.assertEqual(TarotHoroscopeBot._parse_subscription_time("9:7"), (None, None))
+
+    def test_parse_subscription_args_supports_any_order(self) -> None:
+        self.assertEqual(
+            TarotHoroscopeBot._parse_subscription_args("daily 08:30"),
+            ("daily", 8, 30),
+        )
+        self.assertEqual(
+            TarotHoroscopeBot._parse_subscription_args("08:30 weekly"),
+            ("weekly", 8, 30),
+        )
 
 
 if __name__ == "__main__":

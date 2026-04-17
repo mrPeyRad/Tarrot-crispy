@@ -68,6 +68,7 @@ JOURNAL_TRIGGERS = {"дневник предсказаний", "дневник",
 SUBSCRIBE_TRIGGERS = {"рассылка", "подписка", "подписаться"}
 CANCEL_TRIGGERS = {"отмена"}
 COMMAND_RE = re.compile(r"^/(?P<command>[A-Za-z0-9_]+)(?:@\w+)?(?:\s+(?P<args>.*))?$")
+TIME_RE = re.compile(r"^(?P<hour>\d{1,2}):(?P<minute>\d{2})$")
 
 SPREAD_LABELS = {
     "daily": "Карта дня",
@@ -93,6 +94,10 @@ ENTRY_LABELS = {
 
 SUBSCRIPTION_KEYBOARD = (
     ("ежедневно", "еженедельно"),
+)
+TIME_KEYBOARD = (
+    ("08:00", "09:00", "10:00"),
+    ("18:00", "19:00", "21:00"),
 )
 
 
@@ -342,12 +347,23 @@ class TarotHoroscopeBot:
                 self._send_weekly_horoscope(chat_id, user_id, reply_to_message_id, sign.name)
                 return True
 
+            if next_action == "subscribe":
+                self._save_subscription(
+                    chat_id,
+                    user_id,
+                    reply_to_message_id,
+                    payload.get("cadence", "daily"),
+                    payload.get("hour_local", 9),
+                    payload.get("minute_local", 0),
+                )
+                return True
+
             if next_action == "subscribe_daily":
-                self._save_subscription(chat_id, user_id, reply_to_message_id, "daily")
+                self._save_subscription(chat_id, user_id, reply_to_message_id, "daily", 9, 0)
                 return True
 
             if next_action == "subscribe_weekly":
-                self._save_subscription(chat_id, user_id, reply_to_message_id, "weekly")
+                self._save_subscription(chat_id, user_id, reply_to_message_id, "weekly", 9, 0)
                 return True
 
             self._send_horoscope(chat_id, user_id, reply_to_message_id, sign.name)
@@ -437,13 +453,48 @@ class TarotHoroscopeBot:
             return True
 
         if state == "await_subscription_cadence":
-            cadence = self._parse_subscription_cadence(text)
+            cadence, hour_local, minute_local = self._parse_subscription_args(text)
             if cadence is None:
                 self._ask_for_subscription_cadence(chat_id, reply_to_message_id, invalid_value=True)
                 return True
 
+            if hour_local is None or minute_local is None:
+                payload_hour = payload.get("hour_local")
+                payload_minute = payload.get("minute_local")
+                if isinstance(payload_hour, int) and isinstance(payload_minute, int):
+                    hour_local = payload_hour
+                    minute_local = payload_minute
+
             self.storage.clear_conversation_state(chat_id, user_id)
-            self._save_subscription(chat_id, user_id, reply_to_message_id, cadence)
+            if hour_local is None or minute_local is None:
+                self.storage.save_conversation_state(
+                    chat_id,
+                    user_id,
+                    "await_subscription_time",
+                    {"cadence": cadence},
+                )
+                self._ask_for_subscription_time(chat_id, reply_to_message_id)
+                return True
+
+            self._save_subscription(chat_id, user_id, reply_to_message_id, cadence, hour_local, minute_local)
+            return True
+
+        if state == "await_subscription_time":
+            hour_local, minute_local = self._parse_subscription_time(text)
+            if hour_local is None or minute_local is None:
+                self._ask_for_subscription_time(chat_id, reply_to_message_id, invalid_value=True)
+                return True
+
+            cadence = str(payload.get("cadence", "daily"))
+            self.storage.clear_conversation_state(chat_id, user_id)
+            self._save_subscription(
+                chat_id,
+                user_id,
+                reply_to_message_id,
+                cadence,
+                hour_local,
+                minute_local,
+            )
             return True
 
         return False
@@ -466,7 +517,7 @@ class TarotHoroscopeBot:
             "/8ball [вопрос] — шар предсказаний\n"
             "/deck [название] — выбрать визуал колоды\n"
             "/journal — дневник предсказаний и краткая статистика\n"
-            "/subscribe [daily|weekly] — включить рассылку на 09:00 по локальному времени сервера\n"
+            "/subscribe [daily|weekly] [HH:MM] — включить рассылку и при желании задать точное время\n"
             "/unsubscribe — выключить рассылку\n"
             "/setsign [знак] — сохранить свой знак\n"
             "/profile — показать профиль и недавние расклады\n"
@@ -504,7 +555,9 @@ class TarotHoroscopeBot:
             lines.append("Рассылка: выключена")
         else:
             cadence_label = "ежедневно" if subscription.cadence == "daily" else "еженедельно"
-            lines.append(f"Рассылка: {cadence_label} в {subscription.hour_local:02d}:00")
+            lines.append(
+                f"Рассылка: {cadence_label} в {subscription.hour_local:02d}:{subscription.minute_local:02d}"
+            )
 
         if recent_history:
             lines.append("")
@@ -900,12 +953,27 @@ class TarotHoroscopeBot:
 
         month_prefix = datetime.now().strftime("%Y-%m")
         stats = self.storage.get_journal_stats(user_id, month_prefix=month_prefix)
+        source_stats = self.storage.get_journal_source_stats(user_id, month_prefix=month_prefix)
+        card_stats = self.storage.get_tarot_card_stats(user_id, month_prefix=month_prefix, limit=5)
         lines = ["Дневник предсказаний"]
 
         if stats:
             lines.append("")
             lines.append("Статистика за текущий месяц:")
             lines.extend(f"{ENTRY_LABELS.get(entry_type, entry_type)}: {total}" for entry_type, total in stats[:6])
+
+        if source_stats:
+            lines.append("")
+            lines.append("Откуда пришли записи:")
+            lines.extend(
+                f"{self._format_journal_source_label(source)}: {total}"
+                for source, total in source_stats
+            )
+
+        if card_stats:
+            lines.append("")
+            lines.append("Самые частые карты месяца:")
+            lines.extend(f"{card_name}: {total}" for card_name, total in card_stats)
 
         lines.append("")
         lines.append("Последние записи:")
@@ -922,16 +990,39 @@ class TarotHoroscopeBot:
         chat_id: int,
         user_id: int,
         reply_to_message_id: int,
-        raw_cadence: str,
+        raw_args: str,
     ) -> None:
-        cadence = self._parse_subscription_cadence(raw_cadence)
+        existing = self.storage.get_subscription(user_id)
+        cadence, hour_local, minute_local = self._parse_subscription_args(raw_args)
+
+        if cadence is None and existing is not None and hour_local is not None and minute_local is not None:
+            cadence = existing.cadence
+
         if cadence is None:
-            self.storage.save_conversation_state(chat_id, user_id, "await_subscription_cadence")
-            self._ask_for_subscription_cadence(chat_id, reply_to_message_id, invalid_value=bool(raw_cadence))
+            self.storage.save_conversation_state(
+                chat_id,
+                user_id,
+                "await_subscription_cadence",
+                {
+                    "hour_local": hour_local,
+                    "minute_local": minute_local,
+                },
+            )
+            self._ask_for_subscription_cadence(chat_id, reply_to_message_id, invalid_value=bool(raw_args))
+            return
+
+        if hour_local is None or minute_local is None:
+            self.storage.save_conversation_state(
+                chat_id,
+                user_id,
+                "await_subscription_time",
+                {"cadence": cadence},
+            )
+            self._ask_for_subscription_time(chat_id, reply_to_message_id)
             return
 
         self.storage.clear_conversation_state(chat_id, user_id)
-        self._save_subscription(chat_id, user_id, reply_to_message_id, cadence)
+        self._save_subscription(chat_id, user_id, reply_to_message_id, cadence, hour_local, minute_local)
 
     def _save_subscription(
         self,
@@ -939,6 +1030,8 @@ class TarotHoroscopeBot:
         user_id: int,
         reply_to_message_id: int,
         cadence: str,
+        hour_local: int = 9,
+        minute_local: int = 0,
     ) -> None:
         profile = self.storage.get_user_profile(user_id)
         if profile is None or not profile.zodiac_sign:
@@ -946,16 +1039,27 @@ class TarotHoroscopeBot:
                 chat_id,
                 user_id,
                 "await_sign",
-                {"next": f"subscribe_{cadence}"},
+                {
+                    "next": "subscribe",
+                    "cadence": cadence,
+                    "hour_local": hour_local,
+                    "minute_local": minute_local,
+                },
             )
             self._ask_for_sign(chat_id, reply_to_message_id)
             return
 
-        self.storage.save_subscription(user_id=user_id, chat_id=chat_id, cadence=cadence, hour_local=9)
+        self.storage.save_subscription(
+            user_id=user_id,
+            chat_id=chat_id,
+            cadence=cadence,
+            hour_local=hour_local,
+            minute_local=minute_local,
+        )
         cadence_label = "каждый день" if cadence == "daily" else "раз в неделю"
         self.api.send_message(
             chat_id,
-            f"Рассылка включена: {cadence_label} в 09:00 по локальному времени сервера. "
+            f"Рассылка включена: {cadence_label} в {hour_local:02d}:{minute_local:02d} по локальному времени сервера. "
             "Ежедневно я буду присылать гороскоп на день и карту дня, а еженедельно — гороскоп на неделю и карту недели.",
             reply_to_message_id=reply_to_message_id,
             reply_markup={"remove_keyboard": True},
@@ -1037,12 +1141,16 @@ class TarotHoroscopeBot:
         subscription: DeliverySubscription,
         now_local: datetime,
     ) -> str | None:
+        scheduled_reached = (
+            (now_local.hour, now_local.minute)
+            >= (subscription.hour_local, subscription.minute_local)
+        )
         if subscription.cadence == "daily":
-            if now_local.hour < subscription.hour_local:
+            if not scheduled_reached:
                 return None
             return f"daily:{now_local.date().isoformat()}"
 
-        if now_local.weekday() == 0 and now_local.hour < subscription.hour_local:
+        if now_local.weekday() == 0 and not scheduled_reached:
             return None
 
         year, week_number, _ = now_local.isocalendar()
@@ -1375,6 +1483,30 @@ class TarotHoroscopeBot:
             reply_markup=reply_markup,
         )
 
+    def _ask_for_subscription_time(
+        self,
+        chat_id: int,
+        reply_to_message_id: int,
+        invalid_value: bool = False,
+    ) -> None:
+        text = (
+            "Не понял время. Напиши его в формате ЧЧ:ММ, например 08:30 или 19:00."
+            if invalid_value
+            else "Во сколько присылать рассылку? Напиши время в формате ЧЧ:ММ, например 08:30."
+        )
+        reply_markup = {
+            "keyboard": [list(row) for row in TIME_KEYBOARD],
+            "resize_keyboard": True,
+            "one_time_keyboard": True,
+            "input_field_placeholder": "Например: 08:30",
+        }
+        self.api.send_message(
+            chat_id,
+            text,
+            reply_to_message_id=reply_to_message_id,
+            reply_markup=reply_markup,
+        )
+
     def _ask_for_card_name(
         self,
         chat_id: int,
@@ -1398,6 +1530,12 @@ class TarotHoroscopeBot:
         source_suffix = " | по рассылке" if entry.source == "subscription" else ""
         return f"{created} — {label}: {entry.title}{source_suffix}"
 
+    @staticmethod
+    def _format_journal_source_label(source: str) -> str:
+        if source == "subscription":
+            return "По рассылке"
+        return "Вручную"
+
     def _format_history_entry(self, entry: TarotHistoryEntry) -> str:
         created = self._format_entry_date(entry.created_at)
         cards = ", ".join(card["name_ru"] for card in entry.cards[:3])
@@ -1414,6 +1552,38 @@ class TarotHoroscopeBot:
         if normalized in {"weekly", "неделя", "еженедельно", "раз в неделю"}:
             return "weekly"
         return None
+
+    @staticmethod
+    def _parse_subscription_time(text: str) -> tuple[int | None, int | None]:
+        normalized = TarotHoroscopeBot._normalize_text(text)
+        match = TIME_RE.match(normalized)
+        if not match:
+            return None, None
+
+        hour_local = int(match.group("hour"))
+        minute_local = int(match.group("minute"))
+        if hour_local > 23 or minute_local > 59:
+            return None, None
+        return hour_local, minute_local
+
+    @classmethod
+    def _parse_subscription_args(cls, raw_text: str) -> tuple[str | None, int | None, int | None]:
+        cadence: str | None = None
+        hour_local: int | None = None
+        minute_local: int | None = None
+
+        for token in raw_text.split():
+            parsed_cadence = cls._parse_subscription_cadence(token)
+            if parsed_cadence is not None:
+                cadence = parsed_cadence
+                continue
+
+            parsed_hour, parsed_minute = cls._parse_subscription_time(token)
+            if parsed_hour is not None and parsed_minute is not None:
+                hour_local = parsed_hour
+                minute_local = parsed_minute
+
+        return cadence, hour_local, minute_local
 
     @staticmethod
     def _format_entry_date(raw_value: str) -> str:

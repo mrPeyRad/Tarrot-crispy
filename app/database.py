@@ -71,6 +71,7 @@ class DeliverySubscription:
     chat_id: int
     cadence: str
     hour_local: int
+    minute_local: int
     enabled: bool
     last_delivery_key: str | None
     created_at: str
@@ -146,6 +147,7 @@ class Storage:
                     chat_id INTEGER NOT NULL,
                     cadence TEXT NOT NULL,
                     hour_local INTEGER NOT NULL DEFAULT 9,
+                    minute_local INTEGER NOT NULL DEFAULT 0,
                     enabled INTEGER NOT NULL DEFAULT 1,
                     last_delivery_key TEXT,
                     created_at TEXT NOT NULL,
@@ -153,6 +155,29 @@ class Storage:
                 );
                 """
             )
+            self._ensure_column(
+                connection,
+                table_name="delivery_subscriptions",
+                column_name="minute_local",
+                column_definition="INTEGER NOT NULL DEFAULT 0",
+            )
+
+    @staticmethod
+    def _ensure_column(
+        connection: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        column_definition: str,
+    ) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if column_name in columns:
+            return
+        connection.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
+        )
 
     def upsert_user(
         self,
@@ -487,6 +512,61 @@ class Storage:
 
         return tuple((row["entry_type"], int(row["total"])) for row in rows)
 
+    def get_journal_source_stats(
+        self,
+        user_id: int,
+        month_prefix: str | None = None,
+    ) -> tuple[tuple[str, int], ...]:
+        conditions = ["user_id = ?"]
+        params: list[Any] = [user_id]
+        if month_prefix:
+            conditions.append("substr(created_at, 1, 7) = ?")
+            params.append(month_prefix)
+
+        query = (
+            "SELECT source, COUNT(*) AS total "
+            "FROM prediction_journal "
+            f"WHERE {' AND '.join(conditions)} "
+            "GROUP BY source "
+            "ORDER BY total DESC, source ASC"
+        )
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+
+        return tuple((row["source"], int(row["total"])) for row in rows)
+
+    def get_tarot_card_stats(
+        self,
+        user_id: int,
+        month_prefix: str | None = None,
+        limit: int = 5,
+    ) -> tuple[tuple[str, int], ...]:
+        conditions = ["user_id = ?"]
+        params: list[Any] = [user_id]
+        if month_prefix:
+            conditions.append("substr(created_at, 1, 7) = ?")
+            params.append(month_prefix)
+
+        query = (
+            "SELECT cards_json "
+            "FROM tarot_history "
+            f"WHERE {' AND '.join(conditions)} "
+            "ORDER BY created_at DESC"
+        )
+        counts: dict[str, int] = {}
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+
+        for row in rows:
+            for card in json.loads(row["cards_json"]):
+                card_name = str(card.get("name_ru", "")).strip()
+                if not card_name:
+                    continue
+                counts[card_name] = counts.get(card_name, 0) + 1
+
+        ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        return tuple(ranked[:limit])
+
     def count_journal_entries(self, user_id: int) -> int:
         with self._connect() as connection:
             row = connection.execute(
@@ -505,6 +585,7 @@ class Storage:
         chat_id: int,
         cadence: str,
         hour_local: int = 9,
+        minute_local: int = 0,
         enabled: bool = True,
     ) -> None:
         now = _utcnow_iso()
@@ -516,19 +597,30 @@ class Storage:
                     chat_id,
                     cadence,
                     hour_local,
+                    minute_local,
                     enabled,
                     last_delivery_key,
                     created_at,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     chat_id = excluded.chat_id,
                     cadence = excluded.cadence,
                     hour_local = excluded.hour_local,
+                    minute_local = excluded.minute_local,
                     enabled = excluded.enabled,
                     updated_at = excluded.updated_at
                 """,
-                (user_id, chat_id, cadence, hour_local, int(enabled), now, now),
+                (
+                    user_id,
+                    chat_id,
+                    cadence,
+                    hour_local,
+                    minute_local,
+                    int(enabled),
+                    now,
+                    now,
+                ),
             )
 
     def get_subscription(self, user_id: int) -> DeliverySubscription | None:
@@ -540,6 +632,7 @@ class Storage:
                     chat_id,
                     cadence,
                     hour_local,
+                    minute_local,
                     enabled,
                     last_delivery_key,
                     created_at,
@@ -558,6 +651,7 @@ class Storage:
             chat_id=int(row["chat_id"]),
             cadence=row["cadence"],
             hour_local=int(row["hour_local"]),
+            minute_local=int(row["minute_local"]),
             enabled=bool(row["enabled"]),
             last_delivery_key=row["last_delivery_key"],
             created_at=row["created_at"],
@@ -573,6 +667,7 @@ class Storage:
                     chat_id,
                     cadence,
                     hour_local,
+                    minute_local,
                     enabled,
                     last_delivery_key,
                     created_at,
@@ -589,6 +684,7 @@ class Storage:
                 chat_id=int(row["chat_id"]),
                 cadence=row["cadence"],
                 hour_local=int(row["hour_local"]),
+                minute_local=int(row["minute_local"]),
                 enabled=bool(row["enabled"]),
                 last_delivery_key=row["last_delivery_key"],
                 created_at=row["created_at"],
