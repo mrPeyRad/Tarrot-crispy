@@ -83,24 +83,6 @@ DECKS: dict[str, TarotDeckInfo] = {
         background_hex="e9d6b0",
         foreground_hex="513729",
     ),
-    "marseille": TarotDeckInfo(
-        key="marseille",
-        name_en="Marseille Classic",
-        name_ru="Марсельская классика",
-        description="Исторический марсельский визуал на открытых изображениях из семейства Tarot de Marseille.",
-        aliases=("марсель", "марсельская", "marseille", "marseilles", "classic marseille"),
-        background_hex="d7c3a5",
-        foreground_hex="7a2e1f",
-    ),
-    "sola-busca": TarotDeckInfo(
-        key="sola-busca",
-        name_en="Sola-Busca",
-        name_ru="Sola-Busca",
-        description="Ренессансный исторический арт-режим с детализированными гравюрами.",
-        aliases=("sola", "busca", "sola busca", "сола", "сола-буска", "буска"),
-        background_hex="4e3a32",
-        foreground_hex="d8ba85",
-    ),
     "minimal": TarotDeckInfo(
         key="minimal",
         name_en="Minimal",
@@ -279,60 +261,10 @@ def parse_deck(query: str) -> TarotDeckInfo | None:
 
 
 def build_card_image_url(card: TarotCard, deck_key: str = DEFAULT_DECK_KEY) -> str:
-    if deck_key == "marseille":
-        return _build_redirect_url(_build_marseille_filename(card))
-    if deck_key == "sola-busca":
-        return _build_redirect_url(_build_sola_busca_filename(card))
+    _ = deck_key
+    # Пока у альтернативных визуалов нет полноценного пакета из 78 изображений,
+    # используем настоящую карту Rider-Waite вместо текстового плейсхолдера.
     return card.image_url
-
-
-def _build_redirect_url(filename: str) -> str:
-    return _WIKIMEDIA_REDIRECT_URL.format(filename=quote(filename))
-
-
-def _build_marseille_filename(card: TarotCard) -> str:
-    if card.arcana == "major":
-        if card.card_id == "major-00":
-            return "TT Tarot.png"
-        major_number = int(card.card_id.split("-")[1])
-        return f"T{major_number} Tarot.png"
-
-    suit_codes = {
-        "wands": "B",
-        "cups": "C",
-        "pentacles": "P",
-        "swords": "S",
-    }
-    rank_codes = {
-        11: "J",
-        12: "H",
-        13: "Q",
-        14: "K",
-    }
-    rank_number = _minor_rank_number(card)
-    rank_code = rank_codes.get(rank_number, str(rank_number))
-    return f"{rank_code}{suit_codes[card.suit]} Tarot.png"
-
-
-def _build_sola_busca_filename(card: TarotCard) -> str:
-    if card.arcana == "major":
-        major_number = int(card.card_id.split("-")[1])
-        return f"Sola Busca tarot card {major_number:02d}.jpg"
-
-    suit_bases = {
-        "cups": 22,
-        "pentacles": 36,
-        "wands": 50,
-        "swords": 64,
-    }
-    card_number = suit_bases[card.suit] + _minor_rank_number(card) - 1
-    return f"Sola Busca tarot card {card_number:02d}.jpg"
-
-
-def _minor_rank_number(card: TarotCard) -> int:
-    if card.arcana != "minor":
-        raise ValueError("Rank number is only available for minor arcana cards.")
-    return int(card.card_id.split("-")[1])
 
 
 def get_card_by_query(query: str) -> TarotCard | None:
