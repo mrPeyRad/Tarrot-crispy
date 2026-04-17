@@ -400,11 +400,11 @@ class BotParsingTests(unittest.TestCase):
     def test_build_native_menu_commands_exposes_menu_entry(self) -> None:
         commands = TarotHoroscopeBot._build_native_menu_commands()
         self.assertIn(
-            {"command": "menu", "description": "РћС‚РєСЂС‹С‚СЊ РіР»Р°РІРЅРѕРµ РјРµРЅСЋ"},
+            {"command": "menu", "description": "\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u0433\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e"},
             commands,
         )
         self.assertIn(
-            {"command": "deck", "description": "РЎРјРµРЅРёС‚СЊ РІРёР·СѓР°Р» РєРѕР»РѕРґС‹"},
+            {"command": "deck", "description": "\u0421\u043c\u0435\u043d\u0438\u0442\u044c \u0432\u0438\u0437\u0443\u0430\u043b \u043a\u043e\u043b\u043e\u0434\u044b"},
             commands,
         )
 
@@ -412,6 +412,17 @@ class BotParsingTests(unittest.TestCase):
         self.assertEqual(
             TarotHoroscopeBot._build_native_menu_button(),
             {"type": "commands"},
+        )
+
+    def test_build_native_menu_commands_use_readable_russian_descriptions(self) -> None:
+        commands = TarotHoroscopeBot._build_native_menu_commands()
+        self.assertIn(
+            {"command": "menu", "description": "Открыть главное меню"},
+            commands,
+        )
+        self.assertIn(
+            {"command": "deck", "description": "Сменить визуал колоды"},
+            commands,
         )
 
     def test_parse_subscription_time_supports_hh_mm(self) -> None:
