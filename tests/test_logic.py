@@ -2,11 +2,19 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+import random
 import tempfile
 import unittest
 
+from app.cosmic import (
+    build_compatibility_report,
+    build_daily_astro_alert,
+    build_lunar_calendar,
+    extract_signs,
+)
 from app.database import Storage
 from app.horoscope import build_daily_horoscope, parse_sign
+from app.mystic import MAGIC_BALL_REPLIES, ask_magic_ball, draw_rune_of_day, format_rune_draw
 from app.tarot import (
     TAROT_DECK,
     draw_three_card_spread,
@@ -60,6 +68,38 @@ class HoroscopeTests(unittest.TestCase):
         first = build_daily_horoscope(sign, for_day=date(2026, 4, 13))
         second = build_daily_horoscope(sign, for_day=date(2026, 4, 13))
         self.assertEqual(first, second)
+
+    def test_extract_signs_finds_two_signs_in_text(self) -> None:
+        signs = extract_signs("совместимость овен и лев")
+        self.assertEqual([sign.name for sign in signs], ["Овен", "Лев"])
+
+    def test_lunar_calendar_contains_phase_and_date(self) -> None:
+        calendar_text = build_lunar_calendar(for_day=date(2026, 4, 17))
+        self.assertIn("Лунный календарь", calendar_text)
+        self.assertIn("Фаза:", calendar_text)
+        self.assertIn("17 апреля 2026", calendar_text)
+
+    def test_compatibility_report_contains_both_signs_and_percent(self) -> None:
+        report = build_compatibility_report(parse_sign("овен"), parse_sign("лев"))
+        self.assertIn("Овен + Лев", report)
+        self.assertIn("Процент совместимости:", report)
+
+    def test_astro_alert_is_deterministic_for_same_day(self) -> None:
+        first = build_daily_astro_alert(for_day=date(2026, 4, 17))
+        second = build_daily_astro_alert(for_day=date(2026, 4, 17))
+        self.assertEqual(first, second)
+
+
+class MysticTests(unittest.TestCase):
+    def test_rune_of_day_is_deterministic_for_same_user_and_day(self) -> None:
+        first = draw_rune_of_day(user_id=77, for_day=date(2026, 4, 17))
+        second = draw_rune_of_day(user_id=77, for_day=date(2026, 4, 17))
+        self.assertEqual(first.rune.name, second.rune.name)
+        self.assertIn(first.rune.name, format_rune_draw(first))
+
+    def test_magic_ball_returns_known_answer(self) -> None:
+        reply = ask_magic_ball("Получится ли?", rng=random.Random(1))
+        self.assertIn(reply.answer, {item.answer for item in MAGIC_BALL_REPLIES})
 
 
 class StorageTests(unittest.TestCase):

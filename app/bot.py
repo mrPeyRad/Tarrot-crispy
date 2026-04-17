@@ -8,8 +8,15 @@ import time
 from typing import Any
 
 from app.config import Settings
+from app.cosmic import (
+    build_compatibility_report,
+    build_daily_astro_alert,
+    build_lunar_calendar,
+    extract_signs,
+)
 from app.database import Storage, TarotHistoryEntry
 from app.horoscope import ZODIAC_KEYBOARD, build_daily_horoscope, parse_sign
+from app.mystic import ask_magic_ball, draw_rune_of_day, format_magic_ball_reply, format_rune_draw
 from app.tarot import (
     draw_daily_card,
     draw_relationship_card,
@@ -36,12 +43,17 @@ LOGGER = logging.getLogger(__name__)
 
 CARD_OF_DAY_TRIGGERS = {"карта дня", "таро на сегодня"}
 HOROSCOPE_TRIGGERS = {"гороскоп"}
+MOON_TRIGGERS = {"лунный календарь", "фаза луны", "луна сегодня"}
+COMPATIBILITY_TRIGGERS = {"совместимость", "совместимость знаков"}
+ASTRO_ALERT_TRIGGERS = {"астроалерт", "астро-событие", "ретроградный меркурий"}
 THREE_CARD_TRIGGERS = {"расклад 3 карты", "3 карты", "прошлое настоящее будущее"}
 YES_NO_TRIGGERS = {"да/нет", "да нет"}
 RELATIONSHIP_TRIGGERS = {"карта отношений", "отношения"}
 CARD_INFO_TRIGGERS = {"значение карты", "энциклопедия таро", "значение таро"}
+RUNE_TRIGGERS = {"руна дня", "руна"}
+MAGIC_BALL_TRIGGERS = {"шар предсказаний", "магический шар", "magic 8 ball"}
 CANCEL_TRIGGERS = {"отмена"}
-COMMAND_RE = re.compile(r"^/(?P<command>[A-Za-z_]+)(?:@\w+)?(?:\s+(?P<args>.*))?$")
+COMMAND_RE = re.compile(r"^/(?P<command>[A-Za-z0-9_]+)(?:@\w+)?(?:\s+(?P<args>.*))?$")
 
 SPREAD_LABELS = {
     "daily": "Карта дня",
@@ -134,6 +146,18 @@ class TarotHoroscopeBot:
             self._handle_horoscope_request(chat_id, user_id, message_id, args or "")
             return
 
+        if command in {"moon", "luna"}:
+            self._send_moon_calendar(chat_id, message_id)
+            return
+
+        if command in {"compat", "compatibility"}:
+            self._handle_compatibility_request(chat_id, user_id, message_id, args or "")
+            return
+
+        if command in {"astroalert", "astro"}:
+            self._send_astro_alert(chat_id, message_id)
+            return
+
         if command in {"card", "karta", "tarot"}:
             self._send_daily_card(chat_id, user_id, message_id)
             return
@@ -148,6 +172,14 @@ class TarotHoroscopeBot:
 
         if command in {"relationship", "relation"}:
             self._send_relationship_card(chat_id, user_id, message_id)
+            return
+
+        if command == "rune":
+            self._send_rune_of_day(chat_id, user_id, message_id)
+            return
+
+        if command in {"8ball", "ball", "magicball"}:
+            self._handle_magic_ball(chat_id, user_id, message_id, args or "")
             return
 
         if command in {"cardinfo", "meaning"}:
@@ -173,6 +205,18 @@ class TarotHoroscopeBot:
             self._handle_horoscope_request(chat_id, user_id, message_id, "")
             return
 
+        if normalized_text in MOON_TRIGGERS:
+            self._send_moon_calendar(chat_id, message_id)
+            return
+
+        if normalized_text in COMPATIBILITY_TRIGGERS:
+            self._handle_compatibility_request(chat_id, user_id, message_id, "")
+            return
+
+        if normalized_text in ASTRO_ALERT_TRIGGERS:
+            self._send_astro_alert(chat_id, message_id)
+            return
+
         if normalized_text in THREE_CARD_TRIGGERS:
             self._send_three_card_spread(chat_id, user_id, message_id)
             return
@@ -183,6 +227,14 @@ class TarotHoroscopeBot:
 
         if normalized_text in RELATIONSHIP_TRIGGERS:
             self._send_relationship_card(chat_id, user_id, message_id)
+            return
+
+        if normalized_text in RUNE_TRIGGERS:
+            self._send_rune_of_day(chat_id, user_id, message_id)
+            return
+
+        if normalized_text in MAGIC_BALL_TRIGGERS:
+            self._handle_magic_ball(chat_id, user_id, message_id, "")
             return
 
         if normalized_text in CARD_INFO_TRIGGERS:
@@ -239,11 +291,58 @@ class TarotHoroscopeBot:
             self._send_card_guide(chat_id, reply_to_message_id, matches[0])
             return True
 
+        if state == "await_compatibility_first":
+            sign = parse_sign(text)
+            if sign is None:
+                self._ask_for_sign(chat_id, reply_to_message_id, invalid_value=True)
+                return True
+
+            self.storage.save_conversation_state(
+                chat_id,
+                user_id,
+                "await_compatibility_second",
+                {"first_sign": sign.name},
+            )
+            self._ask_for_partner_sign(chat_id, reply_to_message_id, sign.name)
+            return True
+
+        if state == "await_compatibility_second":
+            second_sign = parse_sign(text)
+            if second_sign is None:
+                first_sign_name = payload.get("first_sign")
+                self._ask_for_partner_sign(
+                    chat_id,
+                    reply_to_message_id,
+                    first_sign_name,
+                    invalid_value=True,
+                )
+                return True
+
+            first_sign_name = payload.get("first_sign")
+            self.storage.clear_conversation_state(chat_id, user_id)
+            self._send_compatibility_report(
+                chat_id,
+                reply_to_message_id,
+                first_sign_name,
+                second_sign.name,
+            )
+            return True
+
+        if state == "await_magic_question":
+            question = text.strip()
+            if not question:
+                self._ask_for_magic_question(chat_id, reply_to_message_id, invalid_value=True)
+                return True
+
+            self.storage.clear_conversation_state(chat_id, user_id)
+            self._send_magic_ball(chat_id, reply_to_message_id, question)
+            return True
+
         return False
 
     def _send_help(self, chat_id: int, reply_to_message_id: int) -> None:
         help_text = (
-            "Я умею работать и как таро-бот, и как бот с гороскопом.\n\n"
+            "Я умею работать и как таро-бот, и как бот с гороскопом, лунным календарём и маленькими мистическими ритуалами.\n\n"
             "Команды:\n"
             "/card — карта дня\n"
             "/spread3 — расклад на 3 карты\n"
@@ -251,10 +350,16 @@ class TarotHoroscopeBot:
             "/relationship — карта отношений\n"
             "/cardinfo [название карты] — мини-энциклопедия карты\n"
             "/horoscope [знак] — гороскоп на день\n"
+            "/moon — лунный календарь на сегодня\n"
+            "/compat [знак] или [знак знак] — совместимость знаков\n"
+            "/astroalert — астросигнал дня\n"
+            "/rune — руна дня\n"
+            "/8ball [вопрос] — шар предсказаний\n"
             "/setsign [знак] — сохранить свой знак\n"
             "/profile — показать профиль и недавние расклады\n"
             "/cancel — сбросить текущий диалог\n\n"
             "Текстовые триггеры тоже работают: «карта дня», «гороскоп», "
+            "«лунный календарь», «совместимость», «астроалерт», «руна дня», "
             "«расклад 3 карты», «да/нет», «карта отношений», «значение карты».\n"
             "В группах plain-text триггеры видны боту, если у него отключён privacy mode в BotFather."
         )
@@ -367,6 +472,130 @@ class TarotHoroscopeBot:
             build_daily_horoscope(sign),
             reply_to_message_id=reply_to_message_id,
             reply_markup={"remove_keyboard": True},
+        )
+
+    def _send_moon_calendar(self, chat_id: int, reply_to_message_id: int) -> None:
+        self.api.send_message(
+            chat_id,
+            build_lunar_calendar(),
+            reply_to_message_id=reply_to_message_id,
+        )
+
+    def _handle_compatibility_request(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        raw_text: str,
+    ) -> None:
+        signs = extract_signs(raw_text)
+        profile = self.storage.get_user_profile(user_id)
+        saved_sign = profile.zodiac_sign if profile else None
+
+        if len(signs) >= 2:
+            self.storage.clear_conversation_state(chat_id, user_id)
+            self._send_compatibility_report(chat_id, reply_to_message_id, signs[0].name, signs[1].name)
+            return
+
+        if len(signs) == 1 and saved_sign:
+            self.storage.clear_conversation_state(chat_id, user_id)
+            self._send_compatibility_report(chat_id, reply_to_message_id, saved_sign, signs[0].name)
+            return
+
+        if len(signs) == 1:
+            self.storage.save_conversation_state(
+                chat_id,
+                user_id,
+                "await_compatibility_second",
+                {"first_sign": signs[0].name},
+            )
+            self._ask_for_partner_sign(chat_id, reply_to_message_id, signs[0].name)
+            return
+
+        if saved_sign:
+            self.storage.save_conversation_state(
+                chat_id,
+                user_id,
+                "await_compatibility_second",
+                {"first_sign": saved_sign},
+            )
+            self._ask_for_partner_sign(chat_id, reply_to_message_id, saved_sign)
+            return
+
+        self.storage.save_conversation_state(
+            chat_id,
+            user_id,
+            "await_compatibility_first",
+        )
+        self._ask_for_sign(chat_id, reply_to_message_id)
+
+    def _send_compatibility_report(
+        self,
+        chat_id: int,
+        reply_to_message_id: int,
+        first_sign_name: str | None,
+        second_sign_name: str,
+    ) -> None:
+        first_sign = parse_sign(first_sign_name or "")
+        second_sign = parse_sign(second_sign_name)
+        if first_sign is None:
+            self.api.send_message(
+                chat_id,
+                "Не понял первый знак для совместимости. Попробуй снова через /compat.",
+                reply_to_message_id=reply_to_message_id,
+            )
+            return
+
+        if second_sign is None:
+            self.api.send_message(
+                chat_id,
+                "Не понял второй знак для совместимости. Попробуй снова через /compat.",
+                reply_to_message_id=reply_to_message_id,
+            )
+            return
+
+        self.api.send_message(
+            chat_id,
+            build_compatibility_report(first_sign, second_sign),
+            reply_to_message_id=reply_to_message_id,
+            reply_markup={"remove_keyboard": True},
+        )
+
+    def _send_astro_alert(self, chat_id: int, reply_to_message_id: int) -> None:
+        self.api.send_message(
+            chat_id,
+            build_daily_astro_alert(),
+            reply_to_message_id=reply_to_message_id,
+        )
+
+    def _send_rune_of_day(self, chat_id: int, user_id: int, reply_to_message_id: int) -> None:
+        self.api.send_message(
+            chat_id,
+            format_rune_draw(draw_rune_of_day(user_id)),
+            reply_to_message_id=reply_to_message_id,
+        )
+
+    def _handle_magic_ball(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        raw_question: str,
+    ) -> None:
+        question = raw_question.strip()
+        if not question:
+            self.storage.save_conversation_state(chat_id, user_id, "await_magic_question")
+            self._ask_for_magic_question(chat_id, reply_to_message_id)
+            return
+
+        self.storage.clear_conversation_state(chat_id, user_id)
+        self._send_magic_ball(chat_id, reply_to_message_id, question)
+
+    def _send_magic_ball(self, chat_id: int, reply_to_message_id: int, question: str) -> None:
+        self.api.send_message(
+            chat_id,
+            format_magic_ball_reply(question, ask_magic_ball(question)),
+            reply_to_message_id=reply_to_message_id,
         )
 
     def _send_daily_card(self, chat_id: int, user_id: int, reply_to_message_id: int) -> None:
@@ -518,6 +747,48 @@ class TarotHoroscopeBot:
             text,
             reply_to_message_id=reply_to_message_id,
             reply_markup=reply_markup,
+        )
+
+    def _ask_for_partner_sign(
+        self,
+        chat_id: int,
+        reply_to_message_id: int,
+        first_sign_name: str | None,
+        invalid_value: bool = False,
+    ) -> None:
+        text = (
+            "Не распознал второй знак. Выбери его с клавиатуры или напиши текстом."
+            if invalid_value
+            else f"С кем сравнить совместимость для знака {first_sign_name}? Выбери знак с клавиатуры или напиши его текстом."
+        )
+        reply_markup = {
+            "keyboard": [list(row) for row in ZODIAC_KEYBOARD],
+            "resize_keyboard": True,
+            "one_time_keyboard": True,
+            "input_field_placeholder": "Например: Лев",
+        }
+        self.api.send_message(
+            chat_id,
+            text,
+            reply_to_message_id=reply_to_message_id,
+            reply_markup=reply_markup,
+        )
+
+    def _ask_for_magic_question(
+        self,
+        chat_id: int,
+        reply_to_message_id: int,
+        invalid_value: bool = False,
+    ) -> None:
+        text = (
+            "Нужен сам вопрос. Напиши его одним сообщением, и шар ответит."
+            if invalid_value
+            else "Задай вопрос, на который можно ответить коротко, и я спрошу шар предсказаний."
+        )
+        self.api.send_message(
+            chat_id,
+            text,
+            reply_to_message_id=reply_to_message_id,
         )
 
     def _ask_for_card_name(
