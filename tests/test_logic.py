@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from app.ai import build_fallback_question_reading
-from app.bot import TarotHoroscopeBot
+from app.bot import HOROSCOPE_TRIGGERS, YES_NO_TRIGGERS, TarotHoroscopeBot
 from app.biorhythm import build_biorhythm_report, build_biorhythm_snapshot, parse_birth_date
 from app.cosmic import (
     build_compatibility_insight,
@@ -361,8 +361,17 @@ class BotParsingTests(unittest.TestCase):
         bot = TarotHoroscopeBot.__new__(TarotHoroscopeBot)
         markup = bot._build_main_menu_keyboard()
         self.assertNotIn("меню", [button for row in markup["keyboard"] for button in row])
-        self.assertEqual(markup["keyboard"][-2], ["колода"])
-        self.assertEqual(markup["keyboard"][-1], ["/help"])
+        self.assertEqual(
+            markup["keyboard"],
+            [
+                ["карта дня", "гороскоп на день"],
+                ["быстрый ответ", "шар предсказаний"],
+            ],
+        )
+
+    def test_new_quick_menu_labels_are_supported_by_triggers(self) -> None:
+        self.assertIn("гороскоп на день", HOROSCOPE_TRIGGERS)
+        self.assertIn("быстрый ответ", YES_NO_TRIGGERS)
 
     def test_with_menu_button_appends_menu_row(self) -> None:
         self.assertEqual(
