@@ -30,6 +30,7 @@ from app.share_cards import (
     render_biorhythm_share_card,
     render_compatibility_share_card,
     render_tarot_share_card,
+    render_welcome_card,
 )
 from app.tarot import (
     build_card_image_url,
@@ -115,6 +116,13 @@ TIME_KEYBOARD = (
     ("08:00", "09:00", "10:00"),
     ("18:00", "19:00", "21:00"),
 )
+MAIN_MENU_KEYBOARD = (
+    ("карта дня", "гороскоп"),
+    ("вопрос к таро", "совместимость"),
+    ("лунный календарь", "расклад 3 карты"),
+    ("биоритмы", "дневник предсказаний"),
+    ("колода", "/help"),
+)
 
 
 class TarotHoroscopeBot:
@@ -190,7 +198,11 @@ class TarotHoroscopeBot:
             )
             return
 
-        if command in {"start", "help"}:
+        if command == "start":
+            self._send_start(chat_id, message_id)
+            return
+
+        if command == "help":
             self._send_help(chat_id, message_id)
             return
 
@@ -557,37 +569,62 @@ class TarotHoroscopeBot:
 
         return False
 
+    def _send_start(self, chat_id: int, reply_to_message_id: int) -> None:
+        caption = (
+            "Привет. Я помогаю с таро, гороскопами и небольшими мистическими ритуалами.\n\n"
+            "Выбери кнопку снизу или начни с фразы «карта дня»."
+        )
+        reply_markup = self._build_main_menu_keyboard()
+        try:
+            card_bytes = render_welcome_card(self._get_bot_username())
+        except Exception:
+            LOGGER.exception("Не удалось собрать стартовую карточку")
+            self.api.send_message(
+                chat_id,
+                caption,
+                reply_to_message_id=reply_to_message_id,
+                reply_markup=reply_markup,
+            )
+            return
+
+        self.api.send_photo(
+            chat_id,
+            caption=caption,
+            reply_to_message_id=reply_to_message_id,
+            reply_markup=reply_markup,
+            photo_bytes=card_bytes,
+            filename="welcome-card.png",
+        )
+
     def _send_help(self, chat_id: int, reply_to_message_id: int) -> None:
         help_text = (
-            "Я умею работать и как таро-бот, и как бот с гороскопом, лунным календарём и маленькими мистическими ритуалами.\n\n"
-            "Команды:\n"
-            "/card — карта дня\n"
-            "/ask [вопрос] — карта под конкретный запрос с AI-трактовкой\n"
-            "/spread3 — расклад на 3 карты\n"
-            "/yesno [вопрос] — быстрый ответ Да/Нет\n"
-            "/relationship — карта отношений\n"
-            "/cardinfo [название карты] — мини-энциклопедия карты\n"
-            "/horoscope [знак] — гороскоп на день\n"
-            "/week [знак] — гороскоп на неделю\n"
-            "/biorhythm [дата рождения] — биоритмы на сегодня и график\n"
-            "/moon — лунный календарь на сегодня\n"
-            "/compat [знак] или [знак знак] — совместимость знаков\n"
-            "/astroalert — астросигнал дня\n"
-            "/rune — руна дня\n"
-            "/8ball [вопрос] — шар предсказаний\n"
-            "/deck [название] — выбрать визуал колоды\n"
-            "/journal — дневник предсказаний и краткая статистика\n"
-            "/subscribe [daily|weekly] [HH:MM] — включить рассылку и при желании задать точное время\n"
-            "/unsubscribe — выключить рассылку\n"
-            "/setsign [знак] — сохранить свой знак\n"
-            "/profile — показать профиль и недавние расклады\n"
-            "/cancel — сбросить текущий диалог\n\n"
-            "Текстовые триггеры тоже работают: «карта дня», «вопрос к таро», «гороскоп», "
-            "«гороскоп на неделю», «лунный календарь», «совместимость», «астроалерт», «руна дня», "
-            "«расклад 3 карты», «да/нет», «карта отношений», «значение карты», «биоритмы».\n"
-            "В группах plain-text триггеры видны боту, если у него отключён privacy mode в BotFather."
+            "Что можно сделать быстро:\n"
+            "• карта дня — вытянуть карту с трактовкой\n"
+            "• гороскоп — прогноз на день или неделю\n"
+            "• вопрос к таро — карта под конкретный запрос\n"
+            "• совместимость — сравнить два знака\n"
+            "• колода — переключить визуал карт\n\n"
+            "Полезные команды:\n"
+            "/card, /ask, /spread3, /yesno, /relationship, /cardinfo\n"
+            "/horoscope, /week, /moon, /compat, /astroalert\n"
+            "/rune, /8ball, /biorhythm, /journal, /profile\n"
+            "/deck, /subscribe, /unsubscribe, /setsign, /cancel\n\n"
+            "Текстовые триггеры тоже работают. В группе обычные фразы видны боту, если у него отключён privacy mode в BotFather."
         )
-        self.api.send_message(chat_id, help_text, reply_to_message_id=reply_to_message_id)
+        self.api.send_message(
+            chat_id,
+            help_text,
+            reply_to_message_id=reply_to_message_id,
+            reply_markup=self._build_main_menu_keyboard(),
+        )
+
+    def _build_main_menu_keyboard(self) -> dict[str, object]:
+        return {
+            "keyboard": [list(row) for row in MAIN_MENU_KEYBOARD],
+            "resize_keyboard": True,
+            "is_persistent": True,
+            "input_field_placeholder": "Например: карта дня",
+        }
 
     def _send_profile(self, chat_id: int, user_id: int, reply_to_message_id: int) -> None:
         profile = self.storage.get_user_profile(user_id)
@@ -1758,7 +1795,7 @@ class TarotHoroscopeBot:
             "keyboard": deck_rows,
             "resize_keyboard": True,
             "one_time_keyboard": True,
-            "input_field_placeholder": "Например: Минималистичный визуал",
+            "input_field_placeholder": "Например: Марсельская классика",
         }
         self.api.send_message(
             chat_id,
