@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from app.ai import build_fallback_question_reading
-from app.bot import TarotHoroscopeBot
+from app.bot import HOROSCOPE_TRIGGERS, YES_NO_TRIGGERS, TarotHoroscopeBot
 from app.biorhythm import build_biorhythm_report, build_biorhythm_snapshot, parse_birth_date
 from app.cosmic import (
     build_compatibility_insight,
@@ -24,6 +24,7 @@ from app.share_cards import (
     render_biorhythm_share_card,
     render_compatibility_share_card,
     render_tarot_share_card,
+    render_welcome_card,
 )
 from app.tarot import (
     CardDraw,
@@ -80,12 +81,37 @@ class TarotTests(unittest.TestCase):
 
     def test_parse_deck_supports_aliases(self) -> None:
         self.assertEqual(parse_deck("минималистичная").key, "minimal")
+        self.assertEqual(parse_deck("марсель").key, "marseille")
+        self.assertEqual(parse_deck("sola busca").key, "sola-busca")
         self.assertIsNone(parse_deck("тота"))
         self.assertIsNone(parse_deck("неизвестная колода"))
 
     def test_custom_deck_uses_real_card_image_url(self) -> None:
         url = build_card_image_url(TAROT_DECK[0], "minimal")
         self.assertEqual(url, TAROT_DECK[0].image_url)
+
+    def test_marseille_deck_uses_historical_urls(self) -> None:
+        fool = TAROT_DECK[0]
+        ace_of_cups = get_card_by_query("Туз Кубков")
+        queen_of_cups = get_card_by_query("Королева Кубков")
+        self.assertIsNotNone(ace_of_cups)
+        self.assertIsNotNone(queen_of_cups)
+        self.assertIn("TT%20Tarot.png", build_card_image_url(fool, "marseille"))
+        self.assertIn("1C%20Tarot.png", build_card_image_url(ace_of_cups, "marseille"))
+        self.assertIn("QC%20Tarot.png", build_card_image_url(queen_of_cups, "marseille"))
+
+    def test_sola_busca_deck_uses_historical_urls(self) -> None:
+        fool = TAROT_DECK[0]
+        ace_of_cups = get_card_by_query("Туз Кубков")
+        queen_of_pentacles = get_card_by_query("Королева Пентаклей")
+        self.assertIsNotNone(ace_of_cups)
+        self.assertIsNotNone(queen_of_pentacles)
+        self.assertIn("Sola%20Busca%20tarot%20card%2000.jpg", build_card_image_url(fool, "sola-busca"))
+        self.assertIn("Sola%20Busca%20tarot%20card%2022.jpg", build_card_image_url(ace_of_cups, "sola-busca"))
+        self.assertIn(
+            "Sola%20Busca%20tarot%20card%2048.jpg",
+            build_card_image_url(queen_of_pentacles, "sola-busca"),
+        )
 
     def test_weekly_card_caption_mentions_week(self) -> None:
         caption = format_weekly_caption(draw_weekly_card(deck_key="minimal"))
@@ -183,6 +209,10 @@ class ShareCardTests(unittest.TestCase):
     def test_biorhythm_share_card_renders_png(self) -> None:
         snapshot = build_biorhythm_snapshot(date(1996, 8, 14), target_date=date(2026, 4, 17))
         png = render_biorhythm_share_card(snapshot, "@test_bot")
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+
+    def test_welcome_card_renders_png(self) -> None:
+        png = render_welcome_card("@test_bot")
         self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
 
 
@@ -322,6 +352,39 @@ class StorageTests(unittest.TestCase):
 
 
 class BotParsingTests(unittest.TestCase):
+    def test_build_main_menu_keyboard_is_not_persistent(self) -> None:
+        bot = TarotHoroscopeBot.__new__(TarotHoroscopeBot)
+        markup = bot._build_main_menu_keyboard()
+        self.assertNotIn("is_persistent", markup)
+
+    def test_build_main_menu_keyboard_does_not_append_extra_menu_row(self) -> None:
+        bot = TarotHoroscopeBot.__new__(TarotHoroscopeBot)
+        markup = bot._build_main_menu_keyboard()
+        self.assertNotIn("меню", [button for row in markup["keyboard"] for button in row])
+        self.assertEqual(
+            markup["keyboard"],
+            [
+                ["карта дня", "гороскоп на день"],
+                ["быстрый ответ", "шар предсказаний"],
+            ],
+        )
+
+    def test_new_quick_menu_labels_are_supported_by_triggers(self) -> None:
+        self.assertIn("гороскоп на день", HOROSCOPE_TRIGGERS)
+        self.assertIn("быстрый ответ", YES_NO_TRIGGERS)
+
+    def test_with_menu_button_appends_menu_row(self) -> None:
+        self.assertEqual(
+            TarotHoroscopeBot._with_menu_button((("Овен", "Телец"),)),
+            [["Овен", "Телец"], ["меню"]],
+        )
+
+    def test_with_menu_button_does_not_duplicate_menu(self) -> None:
+        self.assertEqual(
+            TarotHoroscopeBot._with_menu_button((("колода", "меню"),)),
+            [["колода", "меню"]],
+        )
+
     def test_parse_subscription_time_supports_hh_mm(self) -> None:
         self.assertEqual(TarotHoroscopeBot._parse_subscription_time("08:30"), (8, 30))
         self.assertEqual(TarotHoroscopeBot._parse_subscription_time(" 19:00 "), (19, 0))

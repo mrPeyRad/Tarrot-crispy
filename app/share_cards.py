@@ -156,35 +156,260 @@ def render_biorhythm_share_card(snapshot: BiorhythmSnapshot, bot_username: str) 
     return _export_png(image)
 
 
+def render_welcome_card(bot_username: str) -> bytes:
+    _require_pillow()
+    image = _create_canvas(primary="#2b2f4b", secondary="#c78d52")
+    draw = ImageDraw.Draw(image)
+    title_font = _load_font(72, bold=True)
+    subtitle_font = _load_font(38, bold=True)
+    body_font = _load_font(30)
+    small_font = _load_font(24)
+    tiny_font = _load_font(22)
+
+    _draw_header(draw, "Mystic Guide", "Таро и астрология", bot_username, title_font, small_font)
+    _draw_glass_card(draw, (72, 220, 1008, 1240))
+
+    _draw_section_label(draw, "Что внутри", 108, 286, subtitle_font, small_font)
+    next_y = _draw_wrapped_text(
+        draw,
+        "Карты таро, астропрогнозы и лёгкие эзотерические ритуалы, которые можно вызвать в один тап.",
+        body_font,
+        "#fff8ef",
+        108,
+        348,
+        864,
+        3,
+    ) + 34
+
+    pill_font = _load_font(28, bold=True)
+    pills = (
+        ((108, next_y, 458, next_y + 66), "карта дня"),
+        ((474, next_y, 824, next_y + 66), "гороскоп"),
+        ((108, next_y + 84, 548, next_y + 150), "вопрос к таро"),
+        ((564, next_y + 84, 972, next_y + 150), "совместимость"),
+        ((108, next_y + 168, 548, next_y + 234), "лунный календарь"),
+        ((564, next_y + 168, 972, next_y + 234), "дневник"),
+    )
+    for bounds, text in pills:
+        _draw_pill(draw, bounds, text, pill_font, "#fff8ef", "#00000055")
+
+    next_y = next_y + 292
+    _draw_section_label(draw, "Быстрый старт", 108, next_y, subtitle_font, small_font)
+    next_y = _draw_wrapped_text(
+        draw,
+        "Напиши одну из кнопок ниже или начни с фразы «карта дня». Бот запомнит твой знак и любимую колоду, чтобы дальше отвечать быстрее.",
+        body_font,
+        "#fff8ef",
+        108,
+        next_y + 62,
+        864,
+        4,
+    ) + 36
+
+    _draw_pill(
+        draw,
+        (108, next_y, 972, next_y + 86),
+        "Попробуй: карта дня",
+        _load_font(34, bold=True),
+        "#2b2f4b",
+        "#f8e3bb",
+    )
+    draw.text((108, 1188), "/help покажет все команды", font=tiny_font, fill="#fff4e1cc")
+    return _export_png(image)
+
+
 def _require_pillow() -> None:
     if Image is None or ImageColor is None or ImageDraw is None or ImageFont is None or ImageOps is None:
         raise RuntimeError("Для красивых карточек нужен Pillow.")
+
+
+def _get_tarot_frame_style(deck_key: str) -> dict[str, object]:
+    base = {
+        "variant": "classic",
+        "panel_fill": (247, 239, 225, 245),
+        "panel_outline": (255, 243, 223, 255),
+        "inner_outline": (214, 191, 150, 235),
+        "border_outline": "#fff3df",
+        "mat_fill": (221, 212, 196, 225),
+        "mat_outline": (193, 171, 135, 215),
+        "accent": (198, 170, 126, 170),
+        "art_shadow": (0, 0, 0, 38),
+        "padding": 26,
+        "mat_margin_x": 16,
+        "mat_margin_y": 14,
+        "outer_radius": 36,
+        "inner_radius": 28,
+        "mat_radius": 22,
+    }
+
+    if deck_key == "marseille":
+        return {
+            **base,
+            "variant": "marseille",
+            "panel_fill": (241, 228, 203, 248),
+            "panel_outline": (183, 122, 88, 255),
+            "inner_outline": (123, 62, 42, 215),
+            "border_outline": "#f0d7bd",
+            "mat_fill": (221, 208, 184, 228),
+            "mat_outline": (144, 86, 62, 205),
+            "accent": (153, 84, 54, 175),
+            "art_shadow": (90, 48, 33, 28),
+            "outer_radius": 32,
+            "inner_radius": 24,
+            "mat_radius": 18,
+        }
+
+    if deck_key == "sola-busca":
+        return {
+            **base,
+            "variant": "sola-busca",
+            "panel_fill": (225, 212, 188, 248),
+            "panel_outline": (170, 140, 102, 255),
+            "inner_outline": (98, 74, 53, 215),
+            "border_outline": "#d8ba85",
+            "mat_fill": (196, 179, 151, 226),
+            "mat_outline": (106, 79, 56, 205),
+            "accent": (111, 83, 57, 165),
+            "art_shadow": (70, 48, 28, 34),
+            "outer_radius": 32,
+            "inner_radius": 24,
+            "mat_radius": 16,
+        }
+
+    if deck_key == "minimal":
+        return {
+            **base,
+            "variant": "minimal",
+            "panel_fill": (244, 241, 235, 248),
+            "panel_outline": (224, 229, 232, 255),
+            "inner_outline": (152, 165, 176, 190),
+            "border_outline": "#e6eef3",
+            "mat_fill": (228, 231, 232, 220),
+            "mat_outline": (167, 177, 186, 190),
+            "accent": (128, 140, 152, 130),
+            "art_shadow": (0, 0, 0, 28),
+        }
+
+    return base
 
 
 def _draw_tarot_art(image, draw_result: CardDraw, bounds: tuple[int, int, int, int]) -> None:
     left, top, right, bottom = bounds
     width = right - left
     height = bottom - top
+    style = _get_tarot_frame_style(draw_result.deck_key)
+    outer_radius = int(style["outer_radius"])
+    inner_radius = int(style["inner_radius"])
     shadow = Image.new("RGBA", image.size, (0, 0, 0, 0))
     shadow_draw = ImageDraw.Draw(shadow)
     shadow_draw.rounded_rectangle(
         (left + 14, top + 18, right + 14, bottom + 18),
-        radius=36,
+        radius=outer_radius,
         fill=(0, 0, 0, 72),
     )
     image.alpha_composite(shadow)
 
     art = _load_tarot_art(draw_result)
-    art = ImageOps.fit(art, (width, height), method=_resampling_filter())
     if draw_result.is_reversed:
         art = art.rotate(180, expand=False)
+    art = art.convert("RGBA")
 
-    mask = Image.new("L", (width, height), 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, width, height), radius=36, fill=255)
-    image.paste(art, (left, top), mask)
+    panel = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    panel_draw = ImageDraw.Draw(panel)
+    panel_draw.rounded_rectangle(
+        (0, 0, width - 1, height - 1),
+        radius=outer_radius,
+        fill=style["panel_fill"],
+        outline=style["panel_outline"],
+        width=5,
+    )
+    panel_draw.rounded_rectangle(
+        (14, 14, width - 15, height - 15),
+        radius=inner_radius,
+        outline=style["inner_outline"],
+        width=2,
+    )
+    _decorate_tarot_panel(panel_draw, style, width, height)
+
+    padding = int(style["padding"])
+    art = ImageOps.contain(
+        art,
+        (width - (padding * 2), height - (padding * 2)),
+        method=_resampling_filter(),
+    )
+    art_left = (width - art.width) // 2
+    art_top = (height - art.height) // 2
+    mat_margin_x = int(style["mat_margin_x"])
+    mat_margin_y = int(style["mat_margin_y"])
+    panel_draw.rounded_rectangle(
+        (
+            art_left - mat_margin_x,
+            art_top - mat_margin_y,
+            art_left + art.width + mat_margin_x,
+            art_top + art.height + mat_margin_y,
+        ),
+        radius=int(style["mat_radius"]),
+        fill=style["mat_fill"],
+        outline=style["mat_outline"],
+        width=2,
+    )
+
+    art_shadow = Image.new("RGBA", panel.size, (0, 0, 0, 0))
+    art_shadow_draw = ImageDraw.Draw(art_shadow)
+    art_shadow_draw.rounded_rectangle(
+        (art_left + 10, art_top + 14, art_left + art.width + 10, art_top + art.height + 14),
+        radius=24,
+        fill=style["art_shadow"],
+    )
+    panel.alpha_composite(art_shadow)
+    panel.alpha_composite(art, dest=(art_left, art_top))
+
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    overlay.paste(panel, (left, top), panel)
+    image.alpha_composite(overlay)
 
     border = ImageDraw.Draw(image)
-    border.rounded_rectangle(bounds, radius=36, outline="#fff3df", width=5)
+    border.rounded_rectangle(bounds, radius=outer_radius, outline=str(style["border_outline"]), width=5)
+
+
+def _decorate_tarot_panel(panel_draw, style: dict[str, object], width: int, height: int) -> None:
+    variant = str(style["variant"])
+    accent = style["accent"]
+
+    if variant == "marseille":
+        panel_draw.rounded_rectangle((22, 22, width - 23, height - 23), radius=20, outline=accent, width=1)
+        panel_draw.line((52, 34, width - 53, 34), fill=accent, width=2)
+        panel_draw.line((52, height - 35, width - 53, height - 35), fill=accent, width=2)
+        _draw_diamond(panel_draw, width // 2, 34, 9, accent)
+        _draw_diamond(panel_draw, width // 2, height - 35, 9, accent)
+        panel_draw.line((34, 54, 34, height - 55), fill=accent, width=1)
+        panel_draw.line((width - 35, 54, width - 35, height - 55), fill=accent, width=1)
+        return
+
+    if variant == "sola-busca":
+        panel_draw.rounded_rectangle((22, 22, width - 23, height - 23), radius=18, outline=accent, width=1)
+        panel_draw.line((52, 40, width - 53, 40), fill=accent, width=1)
+        panel_draw.line((52, height - 41, width - 53, height - 41), fill=accent, width=1)
+        panel_draw.arc((26, 26, 90, 90), 180, 270, fill=accent, width=2)
+        panel_draw.arc((width - 91, 26, width - 27, 90), 270, 360, fill=accent, width=2)
+        panel_draw.arc((26, height - 91, 90, height - 27), 90, 180, fill=accent, width=2)
+        panel_draw.arc((width - 91, height - 91, width - 27, height - 27), 0, 90, fill=accent, width=2)
+        return
+
+    if variant == "minimal":
+        panel_draw.rounded_rectangle((18, 18, width - 19, height - 19), radius=22, outline=accent, width=1)
+
+
+def _draw_diamond(panel_draw, center_x: int, center_y: int, radius: int, fill) -> None:
+    panel_draw.polygon(
+        [
+            (center_x, center_y - radius),
+            (center_x + radius, center_y),
+            (center_x, center_y + radius),
+            (center_x - radius, center_y),
+        ],
+        outline=fill,
+    )
 
 
 def _load_tarot_art(draw_result: CardDraw):
