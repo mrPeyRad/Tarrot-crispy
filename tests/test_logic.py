@@ -24,7 +24,6 @@ from app.share_cards import (
     render_biorhythm_share_card,
     render_compatibility_share_card,
     render_tarot_share_card,
-    render_welcome_card,
 )
 from app.tarot import (
     CardDraw,
@@ -209,10 +208,6 @@ class ShareCardTests(unittest.TestCase):
     def test_biorhythm_share_card_renders_png(self) -> None:
         snapshot = build_biorhythm_snapshot(date(1996, 8, 14), target_date=date(2026, 4, 17))
         png = render_biorhythm_share_card(snapshot, "@test_bot")
-        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
-
-    def test_welcome_card_renders_png(self) -> None:
-        png = render_welcome_card("@test_bot")
         self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
 
 
