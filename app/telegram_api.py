@@ -73,6 +73,22 @@ class TelegramAPI:
     def get_me(self) -> dict[str, Any]:
         return self._call("getMe")
 
+    def set_my_commands(
+        self,
+        commands: list[dict[str, str]],
+    ) -> bool:
+        return self._call("setMyCommands", {"commands": commands})
+
+    def set_chat_menu_button(
+        self,
+        menu_button: dict[str, Any],
+        chat_id: int | None = None,
+    ) -> bool:
+        payload: dict[str, Any] = {"menu_button": menu_button}
+        if chat_id is not None:
+            payload["chat_id"] = chat_id
+        return self._call("setChatMenuButton", payload)
+
     def get_updates(
         self,
         offset: int | None = None,

@@ -327,6 +327,23 @@ class StorageTests(unittest.TestCase):
 
 
 class BotParsingTests(unittest.TestCase):
+    def test_build_native_menu_commands_exposes_menu_entry(self) -> None:
+        commands = TarotHoroscopeBot._build_native_menu_commands()
+        self.assertIn(
+            {"command": "menu", "description": "Открыть главное меню"},
+            commands,
+        )
+        self.assertIn(
+            {"command": "deck", "description": "Сменить визуал колоды"},
+            commands,
+        )
+
+    def test_build_native_menu_button_uses_commands_type(self) -> None:
+        self.assertEqual(
+            TarotHoroscopeBot._build_native_menu_button(),
+            {"type": "commands"},
+        )
+
     def test_parse_subscription_time_supports_hh_mm(self) -> None:
         self.assertEqual(TarotHoroscopeBot._parse_subscription_time("08:30"), (8, 30))
         self.assertEqual(TarotHoroscopeBot._parse_subscription_time(" 19:00 "), (19, 0))

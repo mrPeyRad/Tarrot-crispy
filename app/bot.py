@@ -80,6 +80,7 @@ JOURNAL_TRIGGERS = {"дневник предсказаний", "дневник",
 SUBSCRIBE_TRIGGERS = {"рассылка", "подписка", "подписаться"}
 TAROT_QUESTION_TRIGGERS = {"вопрос к таро", "спросить таро", "таро по вопросу"}
 BIORHYTHM_TRIGGERS = {"биоритмы", "биоритм"}
+MENU_TRIGGERS = {"меню", "главное меню"}
 CANCEL_TRIGGERS = {"отмена"}
 COMMAND_RE = re.compile(r"^/(?P<command>[A-Za-z0-9_]+)(?:@\w+)?(?:\s+(?P<args>.*))?$")
 TIME_RE = re.compile(r"^(?P<hour>\d{1,2}):(?P<minute>\d{2})$")
@@ -123,6 +124,28 @@ MAIN_MENU_KEYBOARD = (
     ("биоритмы", "дневник предсказаний"),
     ("колода", "/help"),
 )
+BOT_COMMANDS = (
+    ("menu", "Открыть главное меню"),
+    ("card", "Карта дня"),
+    ("ask", "Карта по вашему вопросу"),
+    ("spread3", "Расклад на 3 карты"),
+    ("yesno", "Быстрый ответ Да/Нет"),
+    ("relationship", "Карта отношений"),
+    ("cardinfo", "Значение карты"),
+    ("horoscope", "Гороскоп на день"),
+    ("week", "Гороскоп на неделю"),
+    ("moon", "Лунный календарь"),
+    ("compat", "Совместимость знаков"),
+    ("astroalert", "Астроалерт на день"),
+    ("rune", "Руна дня"),
+    ("8ball", "Шар предсказаний"),
+    ("biorhythm", "Биоритмы на сегодня"),
+    ("deck", "Сменить визуал колоды"),
+    ("journal", "Открыть дневник"),
+    ("subscribe", "Настроить рассылку"),
+    ("profile", "Показать профиль"),
+    ("help", "Короткая справка"),
+)
 
 
 class TarotHoroscopeBot:
@@ -141,6 +164,7 @@ class TarotHoroscopeBot:
         return cls(Settings.from_env(project_root))
 
     def run(self) -> None:
+        self._configure_native_menu()
         LOGGER.info("Бот запущен и ожидает обновления.")
         offset: int | None = None
 
@@ -199,6 +223,11 @@ class TarotHoroscopeBot:
             return
 
         if command == "start":
+            self._send_start(chat_id, message_id)
+            return
+
+        if command == "menu" or normalized_text in MENU_TRIGGERS:
+            self.storage.clear_conversation_state(chat_id, user_id)
             self._send_start(chat_id, message_id)
             return
 
@@ -572,7 +601,7 @@ class TarotHoroscopeBot:
     def _send_start(self, chat_id: int, reply_to_message_id: int) -> None:
         caption = (
             "Привет. Я помогаю с таро, гороскопами и небольшими мистическими ритуалами.\n\n"
-            "Выбери кнопку снизу или начни с фразы «карта дня»."
+            "Выбери кнопку снизу, открой нативное меню Telegram или начни с фразы «карта дня»."
         )
         reply_markup = self._build_main_menu_keyboard()
         try:
@@ -605,7 +634,7 @@ class TarotHoroscopeBot:
             "• совместимость — сравнить два знака\n"
             "• колода — переключить визуал карт\n\n"
             "Полезные команды:\n"
-            "/card, /ask, /spread3, /yesno, /relationship, /cardinfo\n"
+            "/menu, /card, /ask, /spread3, /yesno, /relationship, /cardinfo\n"
             "/horoscope, /week, /moon, /compat, /astroalert\n"
             "/rune, /8ball, /biorhythm, /journal, /profile\n"
             "/deck, /subscribe, /unsubscribe, /setsign, /cancel\n\n"
@@ -625,6 +654,28 @@ class TarotHoroscopeBot:
             "is_persistent": True,
             "input_field_placeholder": "Например: карта дня",
         }
+
+    def _configure_native_menu(self) -> None:
+        try:
+            self.api.set_my_commands(self._build_native_menu_commands())
+        except TelegramAPIError:
+            LOGGER.exception("Не удалось зарегистрировать системные команды")
+
+        try:
+            self.api.set_chat_menu_button(self._build_native_menu_button())
+        except TelegramAPIError:
+            LOGGER.exception("Не удалось включить нативную кнопку меню")
+
+    @staticmethod
+    def _build_native_menu_commands() -> list[dict[str, str]]:
+        return [
+            {"command": command, "description": description}
+            for command, description in BOT_COMMANDS
+        ]
+
+    @staticmethod
+    def _build_native_menu_button() -> dict[str, str]:
+        return {"type": "commands"}
 
     def _send_profile(self, chat_id: int, user_id: int, reply_to_message_id: int) -> None:
         profile = self.storage.get_user_profile(user_id)
