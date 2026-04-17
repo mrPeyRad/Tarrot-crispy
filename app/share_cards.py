@@ -156,68 +156,6 @@ def render_biorhythm_share_card(snapshot: BiorhythmSnapshot, bot_username: str) 
     return _export_png(image)
 
 
-def render_welcome_card(bot_username: str) -> bytes:
-    _require_pillow()
-    image = _create_canvas(primary="#2b2f4b", secondary="#c78d52")
-    draw = ImageDraw.Draw(image)
-    title_font = _load_font(72, bold=True)
-    subtitle_font = _load_font(38, bold=True)
-    body_font = _load_font(30)
-    small_font = _load_font(24)
-    tiny_font = _load_font(22)
-
-    _draw_header(draw, "Mystic Guide", "Таро и астрология", bot_username, title_font, small_font)
-    _draw_glass_card(draw, (72, 220, 1008, 1240))
-
-    _draw_section_label(draw, "Что внутри", 108, 286, subtitle_font, small_font)
-    next_y = _draw_wrapped_text(
-        draw,
-        "Карты таро, астропрогнозы и лёгкие эзотерические ритуалы, которые можно вызвать в один тап.",
-        body_font,
-        "#fff8ef",
-        108,
-        348,
-        864,
-        3,
-    ) + 34
-
-    pill_font = _load_font(28, bold=True)
-    pills = (
-        ((108, next_y, 458, next_y + 66), "карта дня"),
-        ((474, next_y, 824, next_y + 66), "гороскоп"),
-        ((108, next_y + 84, 548, next_y + 150), "вопрос к таро"),
-        ((564, next_y + 84, 972, next_y + 150), "совместимость"),
-        ((108, next_y + 168, 548, next_y + 234), "лунный календарь"),
-        ((564, next_y + 168, 972, next_y + 234), "дневник"),
-    )
-    for bounds, text in pills:
-        _draw_pill(draw, bounds, text, pill_font, "#fff8ef", "#00000055")
-
-    next_y = next_y + 292
-    _draw_section_label(draw, "Быстрый старт", 108, next_y, subtitle_font, small_font)
-    next_y = _draw_wrapped_text(
-        draw,
-        "Напиши одну из кнопок ниже или начни с фразы «карта дня». Бот запомнит твой знак и любимую колоду, чтобы дальше отвечать быстрее.",
-        body_font,
-        "#fff8ef",
-        108,
-        next_y + 62,
-        864,
-        4,
-    ) + 36
-
-    _draw_pill(
-        draw,
-        (108, next_y, 972, next_y + 86),
-        "Попробуй: карта дня",
-        _load_font(34, bold=True),
-        "#2b2f4b",
-        "#f8e3bb",
-    )
-    draw.text((108, 1188), "/help покажет все команды", font=tiny_font, fill="#fff4e1cc")
-    return _export_png(image)
-
-
 def _require_pillow() -> None:
     if Image is None or ImageColor is None or ImageDraw is None or ImageFont is None or ImageOps is None:
         raise RuntimeError("Для красивых карточек нужен Pillow.")
