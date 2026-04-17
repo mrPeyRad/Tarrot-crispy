@@ -123,6 +123,30 @@ MAIN_MENU_KEYBOARD = (
 )
 
 
+BOT_COMMANDS = (
+    ("menu", "РћС‚РєСЂС‹С‚СЊ РіР»Р°РІРЅРѕРµ РјРµРЅСЋ"),
+    ("card", "РљР°СЂС‚Р° РґРЅСЏ"),
+    ("ask", "РљР°СЂС‚Р° РїРѕ РІР°С€РµРјСѓ РІРѕРїСЂРѕСЃСѓ"),
+    ("spread3", "Р Р°СЃРєР»Р°Рґ РЅР° 3 РєР°СЂС‚С‹"),
+    ("yesno", "Р‘С‹СЃС‚СЂС‹Р№ РѕС‚РІРµС‚ Р”Р°/РќРµС‚"),
+    ("relationship", "РљР°СЂС‚Р° РѕС‚РЅРѕС€РµРЅРёР№"),
+    ("cardinfo", "Р—РЅР°С‡РµРЅРёРµ РєР°СЂС‚С‹"),
+    ("horoscope", "Р“РѕСЂРѕСЃРєРѕРї РЅР° РґРµРЅСЊ"),
+    ("week", "Р“РѕСЂРѕСЃРєРѕРї РЅР° РЅРµРґРµР»СЋ"),
+    ("moon", "Р›СѓРЅРЅС‹Р№ РєР°Р»РµРЅРґР°СЂСЊ"),
+    ("compat", "РЎРѕРІРјРµСЃС‚РёРјРѕСЃС‚СЊ Р·РЅР°РєРѕРІ"),
+    ("astroalert", "РђСЃС‚СЂРѕР°Р»РµСЂС‚ РЅР° РґРµРЅСЊ"),
+    ("rune", "Р СѓРЅР° РґРЅСЏ"),
+    ("8ball", "РЁР°СЂ РїСЂРµРґСЃРєР°Р·Р°РЅРёР№"),
+    ("biorhythm", "Р‘РёРѕСЂРёС‚РјС‹ РЅР° СЃРµРіРѕРґРЅСЏ"),
+    ("deck", "РЎРјРµРЅРёС‚СЊ РІРёР·СѓР°Р» РєРѕР»РѕРґС‹"),
+    ("journal", "РћС‚РєСЂС‹С‚СЊ РґРЅРµРІРЅРёРє"),
+    ("subscribe", "РќР°СЃС‚СЂРѕРёС‚СЊ СЂР°СЃСЃС‹Р»РєСѓ"),
+    ("profile", "РџРѕРєР°Р·Р°С‚СЊ РїСЂРѕС„РёР»СЊ"),
+    ("help", "РљРѕСЂРѕС‚РєР°СЏ СЃРїСЂР°РІРєР°"),
+)
+
+
 class TarotHoroscopeBot:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -139,6 +163,7 @@ class TarotHoroscopeBot:
         return cls(Settings.from_env(project_root))
 
     def run(self) -> None:
+        self._configure_native_menu()
         LOGGER.info("Бот запущен и ожидает обновления.")
         offset: int | None = None
 
@@ -672,6 +697,28 @@ class TarotHoroscopeBot:
         if not has_menu:
             keyboard.append(["меню"])
         return keyboard
+
+    def _configure_native_menu(self) -> None:
+        try:
+            self.api.set_my_commands(self._build_native_menu_commands())
+        except TelegramAPIError:
+            LOGGER.exception("Не удалось зарегистрировать системные команды")
+
+        try:
+            self.api.set_chat_menu_button(self._build_native_menu_button())
+        except TelegramAPIError:
+            LOGGER.exception("Не удалось включить нативную кнопку меню")
+
+    @staticmethod
+    def _build_native_menu_commands() -> list[dict[str, str]]:
+        return [
+            {"command": command, "description": description}
+            for command, description in BOT_COMMANDS
+        ]
+
+    @staticmethod
+    def _build_native_menu_button() -> dict[str, str]:
+        return {"type": "commands"}
 
     def _send_profile(self, chat_id: int, user_id: int, reply_to_message_id: int) -> None:
         profile = self.storage.get_user_profile(user_id)
