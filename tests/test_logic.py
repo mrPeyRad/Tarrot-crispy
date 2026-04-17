@@ -10,6 +10,11 @@ from unittest.mock import patch
 from app.ai import build_fallback_question_reading
 from app.bot import HOROSCOPE_TRIGGERS, YES_NO_TRIGGERS, TarotHoroscopeBot
 from app.biorhythm import build_biorhythm_report, build_biorhythm_snapshot, parse_birth_date
+from app.config import (
+    DEFAULT_BOT_DESCRIPTION,
+    DEFAULT_BOT_SHORT_DESCRIPTION,
+    Settings,
+)
 from app.cosmic import (
     build_compatibility_insight,
     build_compatibility_report,
@@ -364,6 +369,61 @@ class StorageTests(unittest.TestCase):
 
 
 class BotParsingTests(unittest.TestCase):
+    def test_configure_public_profile_pushes_descriptions_to_telegram(self) -> None:
+        class FakeAPI:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str]] = []
+
+            def set_my_name(self, name: str) -> bool:
+                self.calls.append(("name", name))
+                return True
+
+            def set_my_description(self, description: str) -> bool:
+                self.calls.append(("description", description))
+                return True
+
+            def set_my_short_description(self, short_description: str) -> bool:
+                self.calls.append(("short_description", short_description))
+                return True
+
+        bot = TarotHoroscopeBot.__new__(TarotHoroscopeBot)
+        bot.settings = Settings(
+            bot_token="123:abc",
+            bot_username="@wisdom_bot",
+            bot_name="Wisdom Bot",
+            bot_description="Описание для пустого чата",
+            bot_short_description="Короткое описание для превью ссылки",
+            database_path=Path("bot.sqlite3"),
+            openai_api_key=None,
+            openai_model="gpt-5-mini",
+        )
+        bot.api = FakeAPI()
+
+        bot._configure_public_profile()
+
+        self.assertEqual(
+            bot.api.calls,
+            [
+                ("name", "Wisdom Bot"),
+                ("description", "Описание для пустого чата"),
+                ("short_description", "Короткое описание для превью ссылки"),
+            ],
+        )
+
+    def test_settings_from_env_uses_default_bot_profile_texts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir, patch.dict("os.environ", {}, clear=True):
+            project_root = Path(tmp_dir)
+            (project_root / ".env").write_text(
+                "BOT_TOKEN=123:abc\nBOT_USERNAME=wisdom_bot\n",
+                encoding="utf-8",
+            )
+
+            settings = Settings.from_env(project_root)
+
+        self.assertIsNone(settings.bot_name)
+        self.assertEqual(settings.bot_description, DEFAULT_BOT_DESCRIPTION)
+        self.assertEqual(settings.bot_short_description, DEFAULT_BOT_SHORT_DESCRIPTION)
+
     def test_build_main_menu_keyboard_is_not_persistent(self) -> None:
         bot = TarotHoroscopeBot.__new__(TarotHoroscopeBot)
         markup = bot._build_main_menu_keyboard()

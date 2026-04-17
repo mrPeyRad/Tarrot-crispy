@@ -5,6 +5,15 @@ from pathlib import Path
 import os
 
 
+DEFAULT_BOT_DESCRIPTION = (
+    "Привет. Я помогаю с таро, гороскопами, рунами и небольшими мистическими ритуалами.\n"
+    "Напиши /start, чтобы открыть быстрое меню."
+)
+DEFAULT_BOT_SHORT_DESCRIPTION = (
+    "Таро, гороскопы, руны и мистические подсказки на каждый день."
+)
+
+
 def load_env_file(env_path: Path) -> None:
     """Load simple KEY=VALUE pairs from .env without external dependencies."""
     if not env_path.exists():
@@ -25,6 +34,9 @@ def load_env_file(env_path: Path) -> None:
 class Settings:
     bot_token: str
     bot_username: str | None
+    bot_name: str | None
+    bot_description: str
+    bot_short_description: str
     database_path: Path
     openai_api_key: str | None
     openai_model: str
@@ -46,6 +58,15 @@ class Settings:
         if bot_username and not bot_username.startswith("@"):
             bot_username = f"@{bot_username}"
 
+        bot_name = os.getenv("BOT_NAME", "").strip() or None
+        bot_description = (
+            os.getenv("BOT_DESCRIPTION", "").strip() or DEFAULT_BOT_DESCRIPTION
+        )
+        bot_short_description = (
+            os.getenv("BOT_SHORT_DESCRIPTION", "").strip()
+            or DEFAULT_BOT_SHORT_DESCRIPTION
+        )
+
         database_path = Path(
             os.getenv("DATABASE_PATH", "bot_data.sqlite3").strip() or "bot_data.sqlite3"
         )
@@ -59,6 +80,9 @@ class Settings:
         return cls(
             bot_token=token,
             bot_username=bot_username,
+            bot_name=bot_name,
+            bot_description=bot_description,
+            bot_short_description=bot_short_description,
             database_path=database_path,
             openai_api_key=openai_api_key,
             openai_model=openai_model,

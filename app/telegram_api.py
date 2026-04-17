@@ -79,6 +79,36 @@ class TelegramAPI:
     ) -> bool:
         return self._call("setMyCommands", {"commands": commands})
 
+    def set_my_name(
+        self,
+        name: str,
+        language_code: str | None = None,
+    ) -> bool:
+        payload: dict[str, Any] = {"name": name}
+        if language_code is not None:
+            payload["language_code"] = language_code
+        return self._call("setMyName", payload)
+
+    def set_my_description(
+        self,
+        description: str,
+        language_code: str | None = None,
+    ) -> bool:
+        payload: dict[str, Any] = {"description": description}
+        if language_code is not None:
+            payload["language_code"] = language_code
+        return self._call("setMyDescription", payload)
+
+    def set_my_short_description(
+        self,
+        short_description: str,
+        language_code: str | None = None,
+    ) -> bool:
+        payload: dict[str, Any] = {"short_description": short_description}
+        if language_code is not None:
+            payload["language_code"] = language_code
+        return self._call("setMyShortDescription", payload)
+
     def set_chat_menu_button(
         self,
         menu_button: dict[str, Any],

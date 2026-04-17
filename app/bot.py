@@ -164,6 +164,7 @@ class TarotHoroscopeBot:
         return cls(Settings.from_env(project_root))
 
     def run(self) -> None:
+        self._configure_public_profile()
         self._configure_native_menu()
         LOGGER.info("Бот запущен и ожидает обновления.")
         offset: int | None = None
@@ -709,6 +710,23 @@ class TarotHoroscopeBot:
             self.api.set_chat_menu_button(self._build_native_menu_button())
         except TelegramAPIError:
             LOGGER.exception("Не удалось включить нативную кнопку меню")
+
+    def _configure_public_profile(self) -> None:
+        if self.settings.bot_name:
+            try:
+                self.api.set_my_name(self.settings.bot_name)
+            except TelegramAPIError:
+                LOGGER.exception("Не удалось обновить имя бота")
+
+        try:
+            self.api.set_my_description(self.settings.bot_description)
+        except TelegramAPIError:
+            LOGGER.exception("Не удалось обновить описание бота")
+
+        try:
+            self.api.set_my_short_description(self.settings.bot_short_description)
+        except TelegramAPIError:
+            LOGGER.exception("Не удалось обновить короткое описание бота")
 
     @staticmethod
     def _build_native_menu_commands() -> list[dict[str, str]]:
