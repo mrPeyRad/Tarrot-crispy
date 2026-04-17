@@ -13,14 +13,19 @@ from app.cosmic import (
     extract_signs,
 )
 from app.database import Storage
-from app.horoscope import build_daily_horoscope, parse_sign
+from app.horoscope import build_daily_horoscope, build_weekly_horoscope, parse_sign
 from app.mystic import MAGIC_BALL_REPLIES, ask_magic_ball, draw_rune_of_day, format_rune_draw
 from app.tarot import (
     TAROT_DECK,
+    build_card_image_url,
     draw_three_card_spread,
+    draw_weekly_card,
     format_card_guide,
+    format_weekly_caption,
     format_yes_no_caption,
     get_card_by_query,
+    get_deck_info,
+    parse_deck,
     search_cards,
 )
 
@@ -40,21 +45,36 @@ class TarotTests(unittest.TestCase):
         self.assertGreaterEqual(len(matches), 2)
 
     def test_three_card_spread_has_distinct_positions(self) -> None:
-        spread = draw_three_card_spread()
+        spread = draw_three_card_spread(deck_key="minimal")
         self.assertEqual(len(spread), 3)
         self.assertEqual(
             [draw.position for draw in spread],
             ["Прошлое", "Настоящее", "Будущее"],
         )
+        self.assertTrue(all(draw.deck_key == "minimal" for draw in spread))
 
-    def test_card_guide_contains_both_orientations(self) -> None:
-        guide = format_card_guide(TAROT_DECK[0])
+    def test_card_guide_uses_selected_deck_name(self) -> None:
+        guide = format_card_guide(TAROT_DECK[0], deck_key="thoth")
+        self.assertIn("Стилизованный визуал Тота", guide)
         self.assertIn("Прямое положение:", guide)
         self.assertIn("Перевёрнутое положение:", guide)
 
     def test_yes_no_caption_contains_answer(self) -> None:
         caption = format_yes_no_caption(draw_three_card_spread()[0], question="Стоит ли начинать?")
         self.assertIn("Ответ:", caption)
+
+    def test_parse_deck_supports_aliases(self) -> None:
+        self.assertEqual(parse_deck("тота").key, "thoth")
+        self.assertEqual(parse_deck("минималистичная").key, "minimal")
+        self.assertIsNone(parse_deck("неизвестная колода"))
+
+    def test_custom_deck_uses_generated_visual_url(self) -> None:
+        url = build_card_image_url(TAROT_DECK[0], "minimal")
+        self.assertIn("placehold.co", url)
+
+    def test_weekly_card_caption_mentions_week(self) -> None:
+        caption = format_weekly_caption(draw_weekly_card(deck_key="thoth"))
+        self.assertIn("Карта недели", caption)
 
 
 class HoroscopeTests(unittest.TestCase):
@@ -63,10 +83,16 @@ class HoroscopeTests(unittest.TestCase):
         self.assertEqual(parse_sign("Скорпиона").name, "Скорпион")
         self.assertIsNone(parse_sign("не знак"))
 
-    def test_horoscope_is_deterministic_for_same_day(self) -> None:
+    def test_daily_horoscope_is_deterministic_for_same_day(self) -> None:
         sign = parse_sign("дева")
         first = build_daily_horoscope(sign, for_day=date(2026, 4, 13))
         second = build_daily_horoscope(sign, for_day=date(2026, 4, 13))
+        self.assertEqual(first, second)
+
+    def test_weekly_horoscope_is_deterministic_for_same_week(self) -> None:
+        sign = parse_sign("дева")
+        first = build_weekly_horoscope(sign, for_day=date(2026, 4, 13))
+        second = build_weekly_horoscope(sign, for_day=date(2026, 4, 16))
         self.assertEqual(first, second)
 
     def test_extract_signs_finds_two_signs_in_text(self) -> None:
@@ -103,7 +129,7 @@ class MysticTests(unittest.TestCase):
 
 
 class StorageTests(unittest.TestCase):
-    def test_storage_persists_profile_state_and_history(self) -> None:
+    def test_storage_persists_profile_history_journal_and_subscription(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "bot.sqlite3"
             storage = Storage(db_path)
@@ -115,10 +141,12 @@ class StorageTests(unittest.TestCase):
                 last_name=None,
             )
             storage.save_zodiac_sign(1, "Овен")
+            storage.save_preferred_deck(1, "minimal")
             profile = storage.get_user_profile(1)
 
             self.assertIsNotNone(profile)
             self.assertEqual(profile.zodiac_sign, "Овен")
+            self.assertEqual(get_deck_info(profile.preferred_deck).key, "minimal")
 
             storage.save_conversation_state(100, 1, "await_sign", {"next": "horoscope"})
             state = storage.get_conversation_state(100, 1)
@@ -129,22 +157,44 @@ class StorageTests(unittest.TestCase):
                 chat_id=100,
                 user_id=1,
                 spread_type="daily",
-                deck_key="rider-waite",
+                deck_key="minimal",
                 cards_payload=[
                     {
                         "position": "Карта дня",
                         "card_id": "major-18",
                         "name_ru": "Луна",
                         "is_reversed": False,
-                        "deck_key": "rider-waite",
+                        "deck_key": "minimal",
                     }
                 ],
             )
+
+            storage.record_journal_entry(
+                chat_id=100,
+                user_id=1,
+                entry_type="horoscope-daily",
+                title="Гороскоп на день: Овен",
+                summary="Дневной прогноз",
+                source="manual",
+            )
+            storage.save_subscription(user_id=1, chat_id=100, cadence="daily", hour_local=9)
 
             self.assertEqual(storage.count_tarot_history(1), 1)
             recent_history = storage.get_recent_tarot_history(1, limit=1)
             self.assertEqual(len(recent_history), 1)
             self.assertEqual(recent_history[0].cards[0]["name_ru"], "Луна")
+
+            journal_entries = storage.get_recent_journal_entries(1, limit=1)
+            self.assertEqual(len(journal_entries), 1)
+            self.assertEqual(journal_entries[0].entry_type, "horoscope-daily")
+
+            stats = dict(storage.get_journal_stats(1))
+            self.assertEqual(stats["horoscope-daily"], 1)
+
+            subscription = storage.get_subscription(1)
+            self.assertIsNotNone(subscription)
+            self.assertEqual(subscription.cadence, "daily")
+            self.assertEqual(subscription.hour_local, 9)
 
 
 if __name__ == "__main__":

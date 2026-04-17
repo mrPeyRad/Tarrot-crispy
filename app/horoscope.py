@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from hashlib import sha256
 import random
 
@@ -162,6 +162,34 @@ BONUSES = (
     "Подсказка дня: сегодня особенно хорошо работают короткие честные формулировки.",
 )
 
+WEEK_OPENINGS = (
+    "Неделя складывается лучше, если не пытаться прожить все её события в одном рывке.",
+    "Главная сила недели — не в спешке, а в последовательности и верном ритме.",
+    "Фон недели просит держать курс на главное, не растворяясь в чужой повестке.",
+    "Это хорошая неделя для тихой настройки стратегии и более точного движения вперёд.",
+)
+
+WEEK_OPPORTUNITIES = (
+    "Открываются разговоры и встречи, после которых становится яснее направление.",
+    "Легче получается всё, где нужен взрослый темп, спокойная подача и верная расстановка приоритетов.",
+    "Неделя поддерживает задачи, в которых важны гибкость, внимание к нюансам и умение слышать момент.",
+    "Особенно удачны шаги, которые сочетают личную инициативу и здравый расчёт.",
+)
+
+WEEK_WARNINGS = (
+    "На этой неделе не стоит обещать больше, чем реально хочется и можется удержать.",
+    "Слабое место недели — распыление на шум и второстепенные сюжеты.",
+    "Лучше не делать резких выводов из одной эмоции или одного разговора.",
+    "Не пытайся закрыть все вопросы сразу: неделя любит прицельное движение.",
+)
+
+WEEK_BONUSES = (
+    "Полезный настрой: один главный вектор на неделю и заметный, но посильный шаг каждый день.",
+    "Поддержка недели: короткие честные договорённости с собой и с людьми вокруг.",
+    "Подсказка недели: чем яснее личные границы и приоритеты, тем меньше лишнего шума.",
+    "Лучший ритм недели: сначала укрепить основу, потом расширять планы.",
+)
+
 
 def format_date_ru(day: date) -> str:
     return f"{day.day} {MONTHS_RU[day.month]} {day.year}"
@@ -171,10 +199,34 @@ def parse_sign(text: str) -> ZodiacSign | None:
     return SIGNS_BY_ALIAS.get(normalize_text(text))
 
 
+def _seeded_rng(seed_value: str) -> random.Random:
+    digest = sha256(seed_value.encode("utf-8")).digest()
+    return random.Random(int.from_bytes(digest[:8], byteorder="big"))
+
+
+def week_bounds(for_day: date) -> tuple[date, date]:
+    start = for_day - timedelta(days=for_day.weekday())
+    end = start + timedelta(days=6)
+    return start, end
+
+
+def format_date_range_ru(start_day: date, end_day: date) -> str:
+    if start_day.year == end_day.year and start_day.month == end_day.month:
+        return f"{start_day.day}–{end_day.day} {MONTHS_RU[start_day.month]} {start_day.year}"
+    if start_day.year == end_day.year:
+        return (
+            f"{start_day.day} {MONTHS_RU[start_day.month]} – "
+            f"{end_day.day} {MONTHS_RU[end_day.month]} {start_day.year}"
+        )
+    return (
+        f"{start_day.day} {MONTHS_RU[start_day.month]} {start_day.year} – "
+        f"{end_day.day} {MONTHS_RU[end_day.month]} {end_day.year}"
+    )
+
+
 def build_daily_horoscope(sign: ZodiacSign, for_day: date | None = None) -> str:
     current_day = for_day or date.today()
-    seed = sha256(f"{current_day.isoformat()}:{sign.name}".encode("utf-8")).digest()
-    rng = random.Random(int.from_bytes(seed[:8], byteorder="big"))
+    rng = _seeded_rng(f"day:{current_day.isoformat()}:{sign.name}")
 
     opening = rng.choice(OPENINGS)
     energy = rng.choice(ENERGY_LINES)
@@ -187,5 +239,27 @@ def build_daily_horoscope(sign: ZodiacSign, for_day: date | None = None) -> str:
         f"Точка роста: {sign.growth}. {energy}\n\n"
         f"Что поможет: {sign.help_tip}.\n"
         f"{warning}\n"
+        f"{bonus}"
+    )
+
+
+def build_weekly_horoscope(sign: ZodiacSign, for_day: date | None = None) -> str:
+    current_day = for_day or date.today()
+    start_day, end_day = week_bounds(current_day)
+    year, week_number, _ = current_day.isocalendar()
+    rng = _seeded_rng(f"week:{year}:{week_number}:{sign.name}")
+
+    opening = rng.choice(WEEK_OPENINGS)
+    opportunity = rng.choice(WEEK_OPPORTUNITIES)
+    warning = rng.choice(WEEK_WARNINGS)
+    bonus = rng.choice(WEEK_BONUSES)
+
+    return (
+        f"Астрологический прогноз на неделю {format_date_range_ru(start_day, end_day)} "
+        f"для знака {sign.name}\n\n"
+        f"{opening} На этой неделе в центре внимания тема: {sign.focus}. "
+        f"Точка роста недели: {sign.growth}. {opportunity}\n\n"
+        f"Что поможет: {sign.help_tip}.\n"
+        f"Что держать под контролем: {warning}\n"
         f"{bonus}"
     )

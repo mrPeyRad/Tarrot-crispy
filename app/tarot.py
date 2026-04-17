@@ -16,7 +16,11 @@ def normalize_text(value: str) -> str:
 class TarotDeckInfo:
     key: str
     name_ru: str
+    name_en: str
     description: str
+    aliases: tuple[str, ...]
+    background_hex: str
+    foreground_hex: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +48,7 @@ class CardDraw:
     position: str
     card: TarotCard
     is_reversed: bool
+    deck_key: str = "rider-waite"
 
     @property
     def orientation_label(self) -> str:
@@ -53,13 +58,17 @@ class CardDraw:
     def meaning(self) -> str:
         return self.card.reversed_meaning if self.is_reversed else self.card.upright_meaning
 
+    @property
+    def image_url(self) -> str:
+        return build_card_image_url(self.card, self.deck_key)
+
     def to_history_payload(self) -> dict[str, object]:
         return {
             "position": self.position,
             "card_id": self.card.card_id,
             "name_ru": self.card.name_ru,
             "is_reversed": self.is_reversed,
-            "deck_key": self.card.deck_key,
+            "deck_key": self.deck_key,
         }
 
 
@@ -67,9 +76,31 @@ DEFAULT_DECK_KEY = "rider-waite"
 DECKS: dict[str, TarotDeckInfo] = {
     DEFAULT_DECK_KEY: TarotDeckInfo(
         key=DEFAULT_DECK_KEY,
+        name_en="Rider-Waite",
         name_ru="Классическая колода Райдера-Уэйта",
         description="Базовая колода с классическими образами и открытыми иллюстрациями.",
-    )
+        aliases=("райдер", "райдера уэйта", "уэйт", "rider", "waite", "классика", "classic"),
+        background_hex="e9d6b0",
+        foreground_hex="513729",
+    ),
+    "thoth": TarotDeckInfo(
+        key="thoth",
+        name_en="Thoth",
+        name_ru="Стилизованный визуал Тота",
+        description="Тёмная геометричная тема с акцентом на золото и более мистическое настроение.",
+        aliases=("тот", "тота", "thoth", "crowley", "кроули"),
+        background_hex="1c2540",
+        foreground_hex="f2c66d",
+    ),
+    "minimal": TarotDeckInfo(
+        key="minimal",
+        name_en="Minimal",
+        name_ru="Минималистичная колода",
+        description="Светлая лаконичная тема с чистым фоном и спокойными акцентами.",
+        aliases=("минимал", "минималистичная", "minimal", "simple", "чистая"),
+        background_hex="f8f5ef",
+        foreground_hex="364152",
+    ),
 }
 
 
@@ -217,9 +248,37 @@ for _card in TAROT_DECK:
     for _alias in (_card.name_ru, _card.name_en, *_card.aliases):
         _SEARCH_INDEX.setdefault(normalize_text(_alias), _card)
 
+_DECK_SEARCH_INDEX: dict[str, TarotDeckInfo] = {}
+for _deck in DECKS.values():
+    for _alias in (_deck.key, _deck.name_ru, _deck.name_en, *_deck.aliases):
+        _DECK_SEARCH_INDEX.setdefault(normalize_text(_alias), _deck)
+
 
 def get_deck_info(deck_key: str = DEFAULT_DECK_KEY) -> TarotDeckInfo:
     return DECKS.get(deck_key, DECKS[DEFAULT_DECK_KEY])
+
+
+def get_available_decks() -> tuple[TarotDeckInfo, ...]:
+    return tuple(DECKS.values())
+
+
+def parse_deck(query: str) -> TarotDeckInfo | None:
+    normalized = normalize_text(query)
+    if not normalized:
+        return None
+    return _DECK_SEARCH_INDEX.get(normalized)
+
+
+def build_card_image_url(card: TarotCard, deck_key: str = DEFAULT_DECK_KEY) -> str:
+    deck = get_deck_info(deck_key)
+    if deck.key == DEFAULT_DECK_KEY:
+        return card.image_url
+
+    text = quote(f"{deck.name_en}\n{card.name_en}\n{card.name_ru}")
+    return (
+        f"https://placehold.co/720x1200/{deck.background_hex}/{deck.foreground_hex}.png"
+        f"?text={text}"
+    )
 
 
 def get_card_by_query(query: str) -> TarotCard | None:
@@ -256,28 +315,48 @@ def _random_orientation() -> bool:
     return random.random() < 0.35
 
 
-def draw_daily_card() -> CardDraw:
-    return CardDraw(position="Карта дня", card=_choose_cards(1)[0], is_reversed=_random_orientation())
+def draw_daily_card(deck_key: str = DEFAULT_DECK_KEY) -> CardDraw:
+    return CardDraw(
+        position="Карта дня",
+        card=_choose_cards(1)[0],
+        is_reversed=_random_orientation(),
+        deck_key=deck_key,
+    )
 
 
-def draw_three_card_spread() -> tuple[CardDraw, ...]:
+def draw_weekly_card(deck_key: str = DEFAULT_DECK_KEY) -> CardDraw:
+    return CardDraw(
+        position="Карта недели",
+        card=_choose_cards(1)[0],
+        is_reversed=_random_orientation(),
+        deck_key=deck_key,
+    )
+
+
+def draw_three_card_spread(deck_key: str = DEFAULT_DECK_KEY) -> tuple[CardDraw, ...]:
     positions = ("Прошлое", "Настоящее", "Будущее")
     cards = _choose_cards(3)
     return tuple(
-        CardDraw(position=position, card=card, is_reversed=_random_orientation())
+        CardDraw(position=position, card=card, is_reversed=_random_orientation(), deck_key=deck_key)
         for position, card in zip(positions, cards)
     )
 
 
-def draw_yes_no_card() -> CardDraw:
-    return CardDraw(position="Ответ", card=_choose_cards(1)[0], is_reversed=_random_orientation())
+def draw_yes_no_card(deck_key: str = DEFAULT_DECK_KEY) -> CardDraw:
+    return CardDraw(
+        position="Ответ",
+        card=_choose_cards(1)[0],
+        is_reversed=_random_orientation(),
+        deck_key=deck_key,
+    )
 
 
-def draw_relationship_card() -> CardDraw:
+def draw_relationship_card(deck_key: str = DEFAULT_DECK_KEY) -> CardDraw:
     return CardDraw(
         position="Динамика отношений",
         card=_choose_cards(1)[0],
         is_reversed=_random_orientation(),
+        deck_key=deck_key,
     )
 
 
@@ -297,6 +376,17 @@ def evaluate_yes_no(draw: CardDraw) -> tuple[str, str]:
 def format_daily_caption(draw: CardDraw) -> str:
     return (
         f"Карта дня: {draw.card.name_ru}\n"
+        f"Колода: {get_deck_info(draw.deck_key).name_ru}\n"
+        f"Положение: {draw.orientation_label}\n"
+        f"Ключевые слова: {', '.join(draw.card.keywords)}\n\n"
+        f"{draw.meaning}"
+    )
+
+
+def format_weekly_caption(draw: CardDraw) -> str:
+    return (
+        f"Карта недели: {draw.card.name_ru}\n"
+        f"Колода: {get_deck_info(draw.deck_key).name_ru}\n"
         f"Положение: {draw.orientation_label}\n"
         f"Ключевые слова: {', '.join(draw.card.keywords)}\n\n"
         f"{draw.meaning}"
@@ -306,6 +396,7 @@ def format_daily_caption(draw: CardDraw) -> str:
 def format_three_card_caption(draw: CardDraw) -> str:
     return (
         f"{draw.position}: {draw.card.name_ru}\n"
+        f"Колода: {get_deck_info(draw.deck_key).name_ru}\n"
         f"{draw.orientation_label}\n"
         f"{draw.meaning}"
     )
@@ -317,6 +408,7 @@ def format_yes_no_caption(draw: CardDraw, question: str | None = None) -> str:
     return (
         f"{question_block}Ответ: {answer}\n"
         f"Карта: {draw.card.name_ru}\n"
+        f"Колода: {get_deck_info(draw.deck_key).name_ru}\n"
         f"Положение: {draw.orientation_label}\n\n"
         f"{nuance}\n"
         f"Подсказка карты: {draw.meaning}"
@@ -326,16 +418,17 @@ def format_yes_no_caption(draw: CardDraw, question: str | None = None) -> str:
 def format_relationship_caption(draw: CardDraw) -> str:
     return (
         f"Карта отношений: {draw.card.name_ru}\n"
+        f"Колода: {get_deck_info(draw.deck_key).name_ru}\n"
         f"Положение: {draw.orientation_label}\n"
         f"Ключевые слова: {', '.join(draw.card.keywords)}\n\n"
         f"Динамика между вами сейчас читается так: {draw.meaning}"
     )
 
 
-def format_card_guide(card: TarotCard) -> str:
+def format_card_guide(card: TarotCard, deck_key: str = DEFAULT_DECK_KEY) -> str:
     return (
         f"{card.name_ru}\n"
-        f"Колода: {get_deck_info(card.deck_key).name_ru}\n"
+        f"Колода: {get_deck_info(deck_key).name_ru}\n"
         f"Ключевые слова: {', '.join(card.keywords)}\n\n"
         f"Прямое положение: {card.upright_meaning}\n\n"
         f"Перевёрнутое положение: {card.reversed_meaning}"

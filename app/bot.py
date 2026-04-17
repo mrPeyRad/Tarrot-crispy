@@ -14,21 +14,31 @@ from app.cosmic import (
     build_lunar_calendar,
     extract_signs,
 )
-from app.database import Storage, TarotHistoryEntry
-from app.horoscope import ZODIAC_KEYBOARD, build_daily_horoscope, parse_sign
+from app.database import DeliverySubscription, JournalEntry, Storage, TarotHistoryEntry
+from app.horoscope import (
+    ZODIAC_KEYBOARD,
+    build_daily_horoscope,
+    build_weekly_horoscope,
+    parse_sign,
+)
 from app.mystic import ask_magic_ball, draw_rune_of_day, format_magic_ball_reply, format_rune_draw
 from app.tarot import (
+    build_card_image_url,
     draw_daily_card,
     draw_relationship_card,
     draw_three_card_spread,
+    draw_weekly_card,
     draw_yes_no_card,
     format_card_guide,
     format_daily_caption,
     format_relationship_caption,
     format_three_card_caption,
+    format_weekly_caption,
     format_yes_no_caption,
+    get_available_decks,
     get_card_by_query,
     get_deck_info,
+    parse_deck,
     search_cards,
 )
 from app.telegram_api import TelegramAPI, TelegramAPIError
@@ -43,6 +53,7 @@ LOGGER = logging.getLogger(__name__)
 
 CARD_OF_DAY_TRIGGERS = {"карта дня", "таро на сегодня"}
 HOROSCOPE_TRIGGERS = {"гороскоп"}
+WEEKLY_HOROSCOPE_TRIGGERS = {"гороскоп на неделю", "недельный гороскоп", "астропрогноз на неделю"}
 MOON_TRIGGERS = {"лунный календарь", "фаза луны", "луна сегодня"}
 COMPATIBILITY_TRIGGERS = {"совместимость", "совместимость знаков"}
 ASTRO_ALERT_TRIGGERS = {"астроалерт", "астро-событие", "ретроградный меркурий"}
@@ -52,15 +63,37 @@ RELATIONSHIP_TRIGGERS = {"карта отношений", "отношения"}
 CARD_INFO_TRIGGERS = {"значение карты", "энциклопедия таро", "значение таро"}
 RUNE_TRIGGERS = {"руна дня", "руна"}
 MAGIC_BALL_TRIGGERS = {"шар предсказаний", "магический шар", "magic 8 ball"}
+DECK_TRIGGERS = {"колода", "сменить колоду", "визуал колоды"}
+JOURNAL_TRIGGERS = {"дневник предсказаний", "дневник", "журнал предсказаний"}
+SUBSCRIBE_TRIGGERS = {"рассылка", "подписка", "подписаться"}
 CANCEL_TRIGGERS = {"отмена"}
 COMMAND_RE = re.compile(r"^/(?P<command>[A-Za-z0-9_]+)(?:@\w+)?(?:\s+(?P<args>.*))?$")
 
 SPREAD_LABELS = {
     "daily": "Карта дня",
+    "weekly": "Карта недели",
     "three-card": "Расклад на 3 карты",
     "yes-no": "Да/Нет",
     "relationship": "Карта отношений",
 }
+
+ENTRY_LABELS = {
+    "tarot-daily": "Карта дня",
+    "tarot-weekly": "Карта недели",
+    "tarot-three-card": "Расклад на 3 карты",
+    "tarot-yes-no": "Да/Нет",
+    "tarot-relationship": "Карта отношений",
+    "horoscope-daily": "Гороскоп на день",
+    "horoscope-weekly": "Гороскоп на неделю",
+    "moon": "Лунный календарь",
+    "astroalert": "Астро-алерт",
+    "rune": "Руна дня",
+    "magic-ball": "Шар предсказаний",
+}
+
+SUBSCRIPTION_KEYBOARD = (
+    ("ежедневно", "еженедельно"),
+)
 
 
 class TarotHoroscopeBot:
@@ -79,6 +112,7 @@ class TarotHoroscopeBot:
 
         while True:
             try:
+                self._dispatch_due_subscriptions()
                 updates = self.api.get_updates(
                     offset=offset,
                     timeout=self.settings.polling_timeout,
@@ -146,8 +180,12 @@ class TarotHoroscopeBot:
             self._handle_horoscope_request(chat_id, user_id, message_id, args or "")
             return
 
+        if command in {"week", "horoscope_week", "weekly"}:
+            self._handle_weekly_horoscope_request(chat_id, user_id, message_id, args or "")
+            return
+
         if command in {"moon", "luna"}:
-            self._send_moon_calendar(chat_id, message_id)
+            self._send_moon_calendar(chat_id, user_id, message_id)
             return
 
         if command in {"compat", "compatibility"}:
@@ -155,7 +193,11 @@ class TarotHoroscopeBot:
             return
 
         if command in {"astroalert", "astro"}:
-            self._send_astro_alert(chat_id, message_id)
+            self._send_astro_alert(chat_id, user_id, message_id)
+            return
+
+        if command == "deck":
+            self._handle_deck_selection(chat_id, user_id, message_id, args or "")
             return
 
         if command in {"card", "karta", "tarot"}:
@@ -182,6 +224,18 @@ class TarotHoroscopeBot:
             self._handle_magic_ball(chat_id, user_id, message_id, args or "")
             return
 
+        if command in {"journal", "diary"}:
+            self._send_journal(chat_id, user_id, message_id)
+            return
+
+        if command in {"subscribe", "subscription"}:
+            self._handle_subscription_request(chat_id, user_id, message_id, args or "")
+            return
+
+        if command == "unsubscribe":
+            self._unsubscribe(chat_id, user_id, message_id)
+            return
+
         if command in {"cardinfo", "meaning"}:
             self._handle_card_info(chat_id, user_id, message_id, args or "")
             return
@@ -205,8 +259,12 @@ class TarotHoroscopeBot:
             self._handle_horoscope_request(chat_id, user_id, message_id, "")
             return
 
+        if normalized_text in WEEKLY_HOROSCOPE_TRIGGERS:
+            self._handle_weekly_horoscope_request(chat_id, user_id, message_id, "")
+            return
+
         if normalized_text in MOON_TRIGGERS:
-            self._send_moon_calendar(chat_id, message_id)
+            self._send_moon_calendar(chat_id, user_id, message_id)
             return
 
         if normalized_text in COMPATIBILITY_TRIGGERS:
@@ -214,7 +272,11 @@ class TarotHoroscopeBot:
             return
 
         if normalized_text in ASTRO_ALERT_TRIGGERS:
-            self._send_astro_alert(chat_id, message_id)
+            self._send_astro_alert(chat_id, user_id, message_id)
+            return
+
+        if normalized_text in DECK_TRIGGERS:
+            self._handle_deck_selection(chat_id, user_id, message_id, "")
             return
 
         if normalized_text in THREE_CARD_TRIGGERS:
@@ -235,6 +297,14 @@ class TarotHoroscopeBot:
 
         if normalized_text in MAGIC_BALL_TRIGGERS:
             self._handle_magic_ball(chat_id, user_id, message_id, "")
+            return
+
+        if normalized_text in JOURNAL_TRIGGERS:
+            self._send_journal(chat_id, user_id, message_id)
+            return
+
+        if normalized_text in SUBSCRIBE_TRIGGERS:
+            self._handle_subscription_request(chat_id, user_id, message_id, "")
             return
 
         if normalized_text in CARD_INFO_TRIGGERS:
@@ -268,7 +338,19 @@ class TarotHoroscopeBot:
                 )
                 return True
 
-            self._send_horoscope(chat_id, reply_to_message_id, sign.name)
+            if next_action == "horoscope_week":
+                self._send_weekly_horoscope(chat_id, user_id, reply_to_message_id, sign.name)
+                return True
+
+            if next_action == "subscribe_daily":
+                self._save_subscription(chat_id, user_id, reply_to_message_id, "daily")
+                return True
+
+            if next_action == "subscribe_weekly":
+                self._save_subscription(chat_id, user_id, reply_to_message_id, "weekly")
+                return True
+
+            self._send_horoscope(chat_id, user_id, reply_to_message_id, sign.name)
             return True
 
         if state == "await_card_query":
@@ -288,7 +370,7 @@ class TarotHoroscopeBot:
                 return True
 
             self.storage.clear_conversation_state(chat_id, user_id)
-            self._send_card_guide(chat_id, reply_to_message_id, matches[0])
+            self._send_card_guide(chat_id, user_id, reply_to_message_id, matches[0])
             return True
 
         if state == "await_compatibility_first":
@@ -335,7 +417,33 @@ class TarotHoroscopeBot:
                 return True
 
             self.storage.clear_conversation_state(chat_id, user_id)
-            self._send_magic_ball(chat_id, reply_to_message_id, question)
+            self._send_magic_ball(chat_id, user_id, reply_to_message_id, question)
+            return True
+
+        if state == "await_deck_choice":
+            deck = parse_deck(text)
+            if deck is None:
+                self._ask_for_deck(chat_id, reply_to_message_id, invalid_value=True)
+                return True
+
+            self.storage.save_preferred_deck(user_id, deck.key)
+            self.storage.clear_conversation_state(chat_id, user_id)
+            self.api.send_message(
+                chat_id,
+                f"Сохранил колоду: {deck.name_ru}. Теперь новые карты будут приходить в этом визуале.",
+                reply_to_message_id=reply_to_message_id,
+                reply_markup={"remove_keyboard": True},
+            )
+            return True
+
+        if state == "await_subscription_cadence":
+            cadence = self._parse_subscription_cadence(text)
+            if cadence is None:
+                self._ask_for_subscription_cadence(chat_id, reply_to_message_id, invalid_value=True)
+                return True
+
+            self.storage.clear_conversation_state(chat_id, user_id)
+            self._save_subscription(chat_id, user_id, reply_to_message_id, cadence)
             return True
 
         return False
@@ -350,16 +458,21 @@ class TarotHoroscopeBot:
             "/relationship — карта отношений\n"
             "/cardinfo [название карты] — мини-энциклопедия карты\n"
             "/horoscope [знак] — гороскоп на день\n"
+            "/week [знак] — гороскоп на неделю\n"
             "/moon — лунный календарь на сегодня\n"
             "/compat [знак] или [знак знак] — совместимость знаков\n"
             "/astroalert — астросигнал дня\n"
             "/rune — руна дня\n"
             "/8ball [вопрос] — шар предсказаний\n"
+            "/deck [название] — выбрать визуал колоды\n"
+            "/journal — дневник предсказаний и краткая статистика\n"
+            "/subscribe [daily|weekly] — включить рассылку на 09:00 по локальному времени сервера\n"
+            "/unsubscribe — выключить рассылку\n"
             "/setsign [знак] — сохранить свой знак\n"
             "/profile — показать профиль и недавние расклады\n"
             "/cancel — сбросить текущий диалог\n\n"
             "Текстовые триггеры тоже работают: «карта дня», «гороскоп», "
-            "«лунный календарь», «совместимость», «астроалерт», «руна дня», "
+            "«гороскоп на неделю», «лунный календарь», «совместимость», «астроалерт», «руна дня», "
             "«расклад 3 карты», «да/нет», «карта отношений», «значение карты».\n"
             "В группах plain-text триггеры видны боту, если у него отключён privacy mode в BotFather."
         )
@@ -376,13 +489,22 @@ class TarotHoroscopeBot:
             return
 
         history_count = self.storage.count_tarot_history(user_id)
+        journal_count = self.storage.count_journal_entries(user_id)
         recent_history = self.storage.get_recent_tarot_history(user_id, limit=3)
+        subscription = self.storage.get_subscription(user_id)
         lines = [
             "Твой профиль",
             f"Знак зодиака: {profile.zodiac_sign or 'пока не задан'}",
             f"Колода: {get_deck_info(profile.preferred_deck).name_ru}",
             f"Сохранённых раскладов: {history_count}",
+            f"Записей в дневнике: {journal_count}",
         ]
+
+        if subscription is None:
+            lines.append("Рассылка: выключена")
+        else:
+            cadence_label = "ежедневно" if subscription.cadence == "daily" else "еженедельно"
+            lines.append(f"Рассылка: {cadence_label} в {subscription.hour_local:02d}:00")
 
         if recent_history:
             lines.append("")
@@ -390,7 +512,7 @@ class TarotHoroscopeBot:
             lines.extend(self._format_history_entry(entry) for entry in recent_history)
 
         lines.append("")
-        lines.append("Чтобы обновить знак, используй /setsign.")
+        lines.append("Чтобы обновить знак, используй /setsign. Колоду можно сменить через /deck, дневник открыть через /journal.")
         self.api.send_message(
             chat_id,
             "\n".join(lines),
@@ -445,12 +567,12 @@ class TarotHoroscopeBot:
 
             self.storage.save_zodiac_sign(user_id, sign.name)
             self.storage.clear_conversation_state(chat_id, user_id)
-            self._send_horoscope(chat_id, reply_to_message_id, sign.name)
+            self._send_horoscope(chat_id, user_id, reply_to_message_id, sign.name)
             return
 
         profile = self.storage.get_user_profile(user_id)
         if profile and profile.zodiac_sign:
-            self._send_horoscope(chat_id, reply_to_message_id, profile.zodiac_sign)
+            self._send_horoscope(chat_id, user_id, reply_to_message_id, profile.zodiac_sign)
             return
 
         self.storage.save_conversation_state(
@@ -461,23 +583,122 @@ class TarotHoroscopeBot:
         )
         self._ask_for_sign(chat_id, reply_to_message_id)
 
-    def _send_horoscope(self, chat_id: int, reply_to_message_id: int, sign_name: str) -> None:
+    def _handle_weekly_horoscope_request(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        raw_sign: str,
+    ) -> None:
+        if raw_sign:
+            sign = parse_sign(raw_sign)
+            if sign is None:
+                self.storage.save_conversation_state(
+                    chat_id,
+                    user_id,
+                    "await_sign",
+                    {"next": "horoscope_week"},
+                )
+                self._ask_for_sign(chat_id, reply_to_message_id, invalid_value=True)
+                return
+
+            self.storage.save_zodiac_sign(user_id, sign.name)
+            self.storage.clear_conversation_state(chat_id, user_id)
+            self._send_weekly_horoscope(chat_id, user_id, reply_to_message_id, sign.name)
+            return
+
+        profile = self.storage.get_user_profile(user_id)
+        if profile and profile.zodiac_sign:
+            self._send_weekly_horoscope(chat_id, user_id, reply_to_message_id, profile.zodiac_sign)
+            return
+
+        self.storage.save_conversation_state(
+            chat_id,
+            user_id,
+            "await_sign",
+            {"next": "horoscope_week"},
+        )
+        self._ask_for_sign(chat_id, reply_to_message_id)
+
+    def _send_horoscope(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        sign_name: str,
+        source: str = "manual",
+    ) -> None:
         sign = parse_sign(sign_name)
         if sign is None:
             self._ask_for_sign(chat_id, reply_to_message_id, invalid_value=True)
             return
 
+        message = build_daily_horoscope(sign)
+        self.storage.record_journal_entry(
+            chat_id=chat_id,
+            user_id=user_id,
+            entry_type="horoscope-daily",
+            title=f"Гороскоп на день: {sign.name}",
+            summary=f"Дневной прогноз для знака {sign.name}.",
+            source=source,
+            details={"sign": sign.name},
+        )
         self.api.send_message(
             chat_id,
-            build_daily_horoscope(sign),
+            message,
             reply_to_message_id=reply_to_message_id,
             reply_markup={"remove_keyboard": True},
         )
 
-    def _send_moon_calendar(self, chat_id: int, reply_to_message_id: int) -> None:
+    def _send_weekly_horoscope(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        sign_name: str,
+        source: str = "manual",
+    ) -> None:
+        sign = parse_sign(sign_name)
+        if sign is None:
+            self._ask_for_sign(chat_id, reply_to_message_id, invalid_value=True)
+            return
+
+        message = build_weekly_horoscope(sign)
+        self.storage.record_journal_entry(
+            chat_id=chat_id,
+            user_id=user_id,
+            entry_type="horoscope-weekly",
+            title=f"Гороскоп на неделю: {sign.name}",
+            summary=f"Недельный прогноз для знака {sign.name}.",
+            source=source,
+            details={"sign": sign.name},
+        )
         self.api.send_message(
             chat_id,
-            build_lunar_calendar(),
+            message,
+            reply_to_message_id=reply_to_message_id,
+            reply_markup={"remove_keyboard": True},
+        )
+
+    def _send_moon_calendar(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        source: str = "manual",
+    ) -> None:
+        message = build_lunar_calendar()
+        self.storage.record_journal_entry(
+            chat_id=chat_id,
+            user_id=user_id,
+            entry_type="moon",
+            title="Лунный календарь",
+            summary="Фаза луны и совет на день.",
+            source=source,
+        )
+        self.api.send_message(
+            chat_id,
+            message,
             reply_to_message_id=reply_to_message_id,
         )
 
@@ -561,17 +782,42 @@ class TarotHoroscopeBot:
             reply_markup={"remove_keyboard": True},
         )
 
-    def _send_astro_alert(self, chat_id: int, reply_to_message_id: int) -> None:
+    def _send_astro_alert(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        source: str = "manual",
+    ) -> None:
+        message = build_daily_astro_alert()
+        self.storage.record_journal_entry(
+            chat_id=chat_id,
+            user_id=user_id,
+            entry_type="astroalert",
+            title="Астро-алерт дня",
+            summary="Короткий астро-сигнал и предупреждение на день.",
+            source=source,
+        )
         self.api.send_message(
             chat_id,
-            build_daily_astro_alert(),
+            message,
             reply_to_message_id=reply_to_message_id,
         )
 
     def _send_rune_of_day(self, chat_id: int, user_id: int, reply_to_message_id: int) -> None:
+        draw = draw_rune_of_day(user_id)
+        message = format_rune_draw(draw)
+        self.storage.record_journal_entry(
+            chat_id=chat_id,
+            user_id=user_id,
+            entry_type="rune",
+            title=f"Руна дня: {draw.rune.name}",
+            summary=draw.rune.theme,
+            details={"rune": draw.rune.name},
+        )
         self.api.send_message(
             chat_id,
-            format_rune_draw(draw_rune_of_day(user_id)),
+            message,
             reply_to_message_id=reply_to_message_id,
         )
 
@@ -589,39 +835,306 @@ class TarotHoroscopeBot:
             return
 
         self.storage.clear_conversation_state(chat_id, user_id)
-        self._send_magic_ball(chat_id, reply_to_message_id, question)
+        self._send_magic_ball(chat_id, user_id, reply_to_message_id, question)
 
-    def _send_magic_ball(self, chat_id: int, reply_to_message_id: int, question: str) -> None:
+    def _send_magic_ball(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        question: str,
+        source: str = "manual",
+    ) -> None:
+        reply = ask_magic_ball(question)
+        self.storage.record_journal_entry(
+            chat_id=chat_id,
+            user_id=user_id,
+            entry_type="magic-ball",
+            title="Шар предсказаний",
+            summary=f"Вопрос: {question} | Ответ: {reply.answer}",
+            source=source,
+            details={"question": question, "answer": reply.answer},
+        )
         self.api.send_message(
             chat_id,
-            format_magic_ball_reply(question, ask_magic_ball(question)),
+            format_magic_ball_reply(question, reply),
             reply_to_message_id=reply_to_message_id,
         )
 
-    def _send_daily_card(self, chat_id: int, user_id: int, reply_to_message_id: int) -> None:
-        draw = draw_daily_card()
+    def _handle_deck_selection(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        raw_deck: str,
+    ) -> None:
+        if not raw_deck:
+            self.storage.save_conversation_state(chat_id, user_id, "await_deck_choice")
+            self._ask_for_deck(chat_id, reply_to_message_id)
+            return
+
+        deck = parse_deck(raw_deck)
+        if deck is None:
+            self.storage.save_conversation_state(chat_id, user_id, "await_deck_choice")
+            self._ask_for_deck(chat_id, reply_to_message_id, invalid_value=True)
+            return
+
+        self.storage.save_preferred_deck(user_id, deck.key)
+        self.storage.clear_conversation_state(chat_id, user_id)
+        self.api.send_message(
+            chat_id,
+            f"Переключил колоду на «{deck.name_ru}». Следующие карты придут уже в этом визуале.",
+            reply_to_message_id=reply_to_message_id,
+            reply_markup={"remove_keyboard": True},
+        )
+
+    def _send_journal(self, chat_id: int, user_id: int, reply_to_message_id: int) -> None:
+        entries = self.storage.get_recent_journal_entries(user_id, limit=8)
+        if not entries:
+            self.api.send_message(
+                chat_id,
+                "Дневник пока пуст. Получи карту, гороскоп или руну, и я начну сохранять записи.",
+                reply_to_message_id=reply_to_message_id,
+            )
+            return
+
+        month_prefix = datetime.now().strftime("%Y-%m")
+        stats = self.storage.get_journal_stats(user_id, month_prefix=month_prefix)
+        lines = ["Дневник предсказаний"]
+
+        if stats:
+            lines.append("")
+            lines.append("Статистика за текущий месяц:")
+            lines.extend(f"{ENTRY_LABELS.get(entry_type, entry_type)}: {total}" for entry_type, total in stats[:6])
+
+        lines.append("")
+        lines.append("Последние записи:")
+        lines.extend(self._format_journal_entry(entry) for entry in entries)
+
+        self.api.send_message(
+            chat_id,
+            "\n".join(lines),
+            reply_to_message_id=reply_to_message_id,
+        )
+
+    def _handle_subscription_request(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        raw_cadence: str,
+    ) -> None:
+        cadence = self._parse_subscription_cadence(raw_cadence)
+        if cadence is None:
+            self.storage.save_conversation_state(chat_id, user_id, "await_subscription_cadence")
+            self._ask_for_subscription_cadence(chat_id, reply_to_message_id, invalid_value=bool(raw_cadence))
+            return
+
+        self.storage.clear_conversation_state(chat_id, user_id)
+        self._save_subscription(chat_id, user_id, reply_to_message_id, cadence)
+
+    def _save_subscription(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        cadence: str,
+    ) -> None:
+        profile = self.storage.get_user_profile(user_id)
+        if profile is None or not profile.zodiac_sign:
+            self.storage.save_conversation_state(
+                chat_id,
+                user_id,
+                "await_sign",
+                {"next": f"subscribe_{cadence}"},
+            )
+            self._ask_for_sign(chat_id, reply_to_message_id)
+            return
+
+        self.storage.save_subscription(user_id=user_id, chat_id=chat_id, cadence=cadence, hour_local=9)
+        cadence_label = "каждый день" if cadence == "daily" else "раз в неделю"
+        self.api.send_message(
+            chat_id,
+            f"Рассылка включена: {cadence_label} в 09:00 по локальному времени сервера. "
+            "Ежедневно я буду присылать гороскоп на день и карту дня, а еженедельно — гороскоп на неделю и карту недели.",
+            reply_to_message_id=reply_to_message_id,
+            reply_markup={"remove_keyboard": True},
+        )
+
+    def _unsubscribe(self, chat_id: int, user_id: int, reply_to_message_id: int) -> None:
+        subscription = self.storage.get_subscription(user_id)
+        if subscription is None:
+            self.api.send_message(
+                chat_id,
+                "Активной рассылки сейчас нет.",
+                reply_to_message_id=reply_to_message_id,
+            )
+            return
+
+        self.storage.delete_subscription(user_id)
+        self.api.send_message(
+            chat_id,
+            "Рассылка выключена. В любой момент можно вернуть её через /subscribe.",
+            reply_to_message_id=reply_to_message_id,
+        )
+
+    def _dispatch_due_subscriptions(self) -> None:
+        now_local = datetime.now().astimezone()
+        for subscription in self.storage.list_active_subscriptions():
+            delivery_key = self._subscription_due_key(subscription, now_local)
+            if delivery_key is None or subscription.last_delivery_key == delivery_key:
+                continue
+
+            try:
+                self._send_subscription_bundle(subscription)
+                self.storage.update_subscription_delivery(subscription.user_id, delivery_key)
+            except TelegramAPIError:
+                LOGGER.exception("Не удалось отправить рассылку пользователю %s", subscription.user_id)
+            except Exception:
+                LOGGER.exception("Непредвиденная ошибка при рассылке пользователю %s", subscription.user_id)
+
+    def _send_subscription_bundle(self, subscription: DeliverySubscription) -> None:
+        profile = self.storage.get_user_profile(subscription.user_id)
+        if profile is None or not profile.zodiac_sign:
+            self.api.send_message(
+                subscription.chat_id,
+                "Для продолжения рассылки нужно сохранить знак зодиака через /setsign.",
+            )
+            return
+
+        if subscription.cadence == "daily":
+            self._send_horoscope(
+                subscription.chat_id,
+                subscription.user_id,
+                None,
+                profile.zodiac_sign,
+                source="subscription",
+            )
+            self._send_daily_card(
+                subscription.chat_id,
+                subscription.user_id,
+                None,
+                source="subscription",
+            )
+            return
+
+        self._send_weekly_horoscope(
+            subscription.chat_id,
+            subscription.user_id,
+            None,
+            profile.zodiac_sign,
+            source="subscription",
+        )
+        self._send_weekly_card(
+            subscription.chat_id,
+            subscription.user_id,
+            None,
+            source="subscription",
+        )
+
+    def _subscription_due_key(
+        self,
+        subscription: DeliverySubscription,
+        now_local: datetime,
+    ) -> str | None:
+        if subscription.cadence == "daily":
+            if now_local.hour < subscription.hour_local:
+                return None
+            return f"daily:{now_local.date().isoformat()}"
+
+        if now_local.weekday() == 0 and now_local.hour < subscription.hour_local:
+            return None
+
+        year, week_number, _ = now_local.isocalendar()
+        return f"weekly:{year}-W{week_number:02d}"
+
+    def _get_user_deck_key(self, user_id: int) -> str:
+        profile = self.storage.get_user_profile(user_id)
+        if profile is None:
+            return get_deck_info().key
+        return get_deck_info(profile.preferred_deck).key
+
+    def _send_daily_card(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int | None,
+        source: str = "manual",
+    ) -> None:
+        deck_key = self._get_user_deck_key(user_id)
+        draw = draw_daily_card(deck_key=deck_key)
         self.storage.record_tarot_history(
             chat_id=chat_id,
             user_id=user_id,
             spread_type="daily",
-            deck_key=draw.card.deck_key,
+            deck_key=draw.deck_key,
             cards_payload=[draw.to_history_payload()],
+        )
+        self.storage.record_journal_entry(
+            chat_id=chat_id,
+            user_id=user_id,
+            entry_type="tarot-daily",
+            title=f"Карта дня: {draw.card.name_ru}",
+            summary=f"{get_deck_info(draw.deck_key).name_ru}, {draw.orientation_label}.",
+            source=source,
+            details=draw.to_history_payload(),
         )
         self.api.send_photo(
             chat_id,
-            photo_url=draw.card.image_url,
+            photo_url=draw.image_url,
             caption=format_daily_caption(draw),
             reply_to_message_id=reply_to_message_id,
         )
 
+    def _send_weekly_card(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int | None,
+        source: str = "manual",
+    ) -> None:
+        deck_key = self._get_user_deck_key(user_id)
+        draw = draw_weekly_card(deck_key=deck_key)
+        self.storage.record_tarot_history(
+            chat_id=chat_id,
+            user_id=user_id,
+            spread_type="weekly",
+            deck_key=draw.deck_key,
+            cards_payload=[draw.to_history_payload()],
+        )
+        self.storage.record_journal_entry(
+            chat_id=chat_id,
+            user_id=user_id,
+            entry_type="tarot-weekly",
+            title=f"Карта недели: {draw.card.name_ru}",
+            summary=f"{get_deck_info(draw.deck_key).name_ru}, {draw.orientation_label}.",
+            source=source,
+            details=draw.to_history_payload(),
+        )
+        self.api.send_photo(
+            chat_id,
+            photo_url=draw.image_url,
+            caption=format_weekly_caption(draw),
+            reply_to_message_id=reply_to_message_id,
+        )
+
     def _send_three_card_spread(self, chat_id: int, user_id: int, reply_to_message_id: int) -> None:
-        draws = draw_three_card_spread()
+        deck_key = self._get_user_deck_key(user_id)
+        draws = draw_three_card_spread(deck_key=deck_key)
         self.storage.record_tarot_history(
             chat_id=chat_id,
             user_id=user_id,
             spread_type="three-card",
-            deck_key=draws[0].card.deck_key,
+            deck_key=draws[0].deck_key,
             cards_payload=[draw.to_history_payload() for draw in draws],
+        )
+        self.storage.record_journal_entry(
+            chat_id=chat_id,
+            user_id=user_id,
+            entry_type="tarot-three-card",
+            title="Расклад на 3 карты",
+            summary=", ".join(draw.card.name_ru for draw in draws),
+            details={"cards": [draw.to_history_payload() for draw in draws]},
         )
         self.api.send_message(
             chat_id,
@@ -633,7 +1146,7 @@ class TarotHoroscopeBot:
             media=[
                 {
                     "type": "photo",
-                    "media": draw.card.image_url,
+                    "media": draw.image_url,
                     "caption": format_three_card_caption(draw),
                 }
                 for draw in draws
@@ -647,34 +1160,52 @@ class TarotHoroscopeBot:
         reply_to_message_id: int,
         question: str | None,
     ) -> None:
-        draw = draw_yes_no_card()
+        deck_key = self._get_user_deck_key(user_id)
+        draw = draw_yes_no_card(deck_key=deck_key)
         self.storage.record_tarot_history(
             chat_id=chat_id,
             user_id=user_id,
             spread_type="yes-no",
-            deck_key=draw.card.deck_key,
+            deck_key=draw.deck_key,
             cards_payload=[draw.to_history_payload()],
             question=question,
         )
+        self.storage.record_journal_entry(
+            chat_id=chat_id,
+            user_id=user_id,
+            entry_type="tarot-yes-no",
+            title=f"Да/Нет: {draw.card.name_ru}",
+            summary=question or "Быстрый ответ без текста вопроса.",
+            details={"question": question, "card": draw.to_history_payload()},
+        )
         self.api.send_photo(
             chat_id,
-            photo_url=draw.card.image_url,
+            photo_url=draw.image_url,
             caption=format_yes_no_caption(draw, question=question),
             reply_to_message_id=reply_to_message_id,
         )
 
     def _send_relationship_card(self, chat_id: int, user_id: int, reply_to_message_id: int) -> None:
-        draw = draw_relationship_card()
+        deck_key = self._get_user_deck_key(user_id)
+        draw = draw_relationship_card(deck_key=deck_key)
         self.storage.record_tarot_history(
             chat_id=chat_id,
             user_id=user_id,
             spread_type="relationship",
-            deck_key=draw.card.deck_key,
+            deck_key=draw.deck_key,
             cards_payload=[draw.to_history_payload()],
+        )
+        self.storage.record_journal_entry(
+            chat_id=chat_id,
+            user_id=user_id,
+            entry_type="tarot-relationship",
+            title=f"Карта отношений: {draw.card.name_ru}",
+            summary=f"{get_deck_info(draw.deck_key).name_ru}, {draw.orientation_label}.",
+            details=draw.to_history_payload(),
         )
         self.api.send_photo(
             chat_id,
-            photo_url=draw.card.image_url,
+            photo_url=draw.image_url,
             caption=format_relationship_caption(draw),
             reply_to_message_id=reply_to_message_id,
         )
@@ -694,7 +1225,7 @@ class TarotHoroscopeBot:
         exact = get_card_by_query(query)
         if exact is not None:
             self.storage.clear_conversation_state(chat_id, user_id)
-            self._send_card_guide(chat_id, reply_to_message_id, exact)
+            self._send_card_guide(chat_id, user_id, reply_to_message_id, exact)
             return
 
         matches = search_cards(query)
@@ -715,13 +1246,14 @@ class TarotHoroscopeBot:
             return
 
         self.storage.clear_conversation_state(chat_id, user_id)
-        self._send_card_guide(chat_id, reply_to_message_id, matches[0])
+        self._send_card_guide(chat_id, user_id, reply_to_message_id, matches[0])
 
-    def _send_card_guide(self, chat_id: int, reply_to_message_id: int, card: Any) -> None:
+    def _send_card_guide(self, chat_id: int, user_id: int, reply_to_message_id: int, card: Any) -> None:
+        deck_key = self._get_user_deck_key(user_id)
         self.api.send_photo(
             chat_id,
-            photo_url=card.image_url,
-            caption=format_card_guide(card),
+            photo_url=build_card_image_url(card, deck_key),
+            caption=format_card_guide(card, deck_key=deck_key),
             reply_to_message_id=reply_to_message_id,
         )
 
@@ -791,6 +1323,58 @@ class TarotHoroscopeBot:
             reply_to_message_id=reply_to_message_id,
         )
 
+    def _ask_for_deck(
+        self,
+        chat_id: int,
+        reply_to_message_id: int,
+        invalid_value: bool = False,
+    ) -> None:
+        deck_rows = [[deck.name_ru] for deck in get_available_decks()]
+        deck_list = "\n".join(f"• {deck.name_ru} — {deck.description}" for deck in get_available_decks())
+        text = (
+            "Не распознал колоду. Выбери вариант с клавиатуры или напиши его текстом.\n\n"
+            f"{deck_list}"
+            if invalid_value
+            else "Какой визуал колоды использовать?\n\n"
+            f"{deck_list}"
+        )
+        reply_markup = {
+            "keyboard": deck_rows,
+            "resize_keyboard": True,
+            "one_time_keyboard": True,
+            "input_field_placeholder": "Например: Стилизованный визуал Тота",
+        }
+        self.api.send_message(
+            chat_id,
+            text,
+            reply_to_message_id=reply_to_message_id,
+            reply_markup=reply_markup,
+        )
+
+    def _ask_for_subscription_cadence(
+        self,
+        chat_id: int,
+        reply_to_message_id: int,
+        invalid_value: bool = False,
+    ) -> None:
+        text = (
+            "Не понял тип рассылки. Выбери «ежедневно» или «еженедельно»."
+            if invalid_value
+            else "Какую рассылку включить: ежедневно или еженедельно?"
+        )
+        reply_markup = {
+            "keyboard": [list(row) for row in SUBSCRIPTION_KEYBOARD],
+            "resize_keyboard": True,
+            "one_time_keyboard": True,
+            "input_field_placeholder": "Например: ежедневно",
+        }
+        self.api.send_message(
+            chat_id,
+            text,
+            reply_to_message_id=reply_to_message_id,
+            reply_markup=reply_markup,
+        )
+
     def _ask_for_card_name(
         self,
         chat_id: int,
@@ -808,6 +1392,12 @@ class TarotHoroscopeBot:
             reply_to_message_id=reply_to_message_id,
         )
 
+    def _format_journal_entry(self, entry: JournalEntry) -> str:
+        created = self._format_entry_date(entry.created_at)
+        label = ENTRY_LABELS.get(entry.entry_type, entry.entry_type)
+        source_suffix = " | по рассылке" if entry.source == "subscription" else ""
+        return f"{created} — {label}: {entry.title}{source_suffix}"
+
     def _format_history_entry(self, entry: TarotHistoryEntry) -> str:
         created = self._format_entry_date(entry.created_at)
         cards = ", ".join(card["name_ru"] for card in entry.cards[:3])
@@ -815,6 +1405,15 @@ class TarotHoroscopeBot:
         if entry.question:
             return f"{created} — {label}: {cards} | Вопрос: {entry.question}"
         return f"{created} — {label}: {cards}"
+
+    @staticmethod
+    def _parse_subscription_cadence(text: str) -> str | None:
+        normalized = TarotHoroscopeBot._normalize_text(text)
+        if normalized in {"daily", "день", "ежедневно", "каждый день"}:
+            return "daily"
+        if normalized in {"weekly", "неделя", "еженедельно", "раз в неделю"}:
+            return "weekly"
+        return None
 
     @staticmethod
     def _format_entry_date(raw_value: str) -> str:
