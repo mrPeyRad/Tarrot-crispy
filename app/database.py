@@ -79,6 +79,24 @@ class DeliverySubscription:
     updated_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class SubscriptionDelivery:
+    user_id: int
+    delivery_key: str
+    cadence: str
+    sign_name: str
+    card_payload: dict[str, Any]
+    horoscope_sent: bool
+    card_sent: bool
+    completed_at: str | None
+    created_at: str
+    updated_at: str
+
+    @property
+    def is_complete(self) -> bool:
+        return self.horoscope_sent and self.card_sent
+
+
 class Storage:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
@@ -169,6 +187,20 @@ class Storage:
 
                 CREATE INDEX IF NOT EXISTS idx_incoming_updates_status_update
                 ON incoming_updates (status, update_id ASC);
+
+                CREATE TABLE IF NOT EXISTS subscription_deliveries (
+                    user_id INTEGER NOT NULL,
+                    delivery_key TEXT NOT NULL,
+                    cadence TEXT NOT NULL,
+                    sign_name TEXT NOT NULL,
+                    card_json TEXT NOT NULL,
+                    horoscope_sent INTEGER NOT NULL DEFAULT 0,
+                    card_sent INTEGER NOT NULL DEFAULT 0,
+                    completed_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, delivery_key)
+                );
                 """
             )
             self._ensure_column(
@@ -716,6 +748,130 @@ class Storage:
                 """,
                 (error_message[:1000], _utcnow_iso(), update_id),
             )
+
+    @staticmethod
+    def _row_to_subscription_delivery(row: sqlite3.Row) -> SubscriptionDelivery:
+        return SubscriptionDelivery(
+            user_id=int(row["user_id"]),
+            delivery_key=row["delivery_key"],
+            cadence=row["cadence"],
+            sign_name=row["sign_name"],
+            card_payload=json.loads(row["card_json"]),
+            horoscope_sent=bool(row["horoscope_sent"]),
+            card_sent=bool(row["card_sent"]),
+            completed_at=row["completed_at"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def get_subscription_delivery(
+        self,
+        user_id: int,
+        delivery_key: str,
+    ) -> SubscriptionDelivery | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    user_id,
+                    delivery_key,
+                    cadence,
+                    sign_name,
+                    card_json,
+                    horoscope_sent,
+                    card_sent,
+                    completed_at,
+                    created_at,
+                    updated_at
+                FROM subscription_deliveries
+                WHERE user_id = ? AND delivery_key = ?
+                """,
+                (user_id, delivery_key),
+            ).fetchone()
+
+        if row is None:
+            return None
+        return self._row_to_subscription_delivery(row)
+
+    def ensure_subscription_delivery(
+        self,
+        user_id: int,
+        delivery_key: str,
+        cadence: str,
+        sign_name: str,
+        card_payload: dict[str, Any],
+    ) -> SubscriptionDelivery:
+        existing = self.get_subscription_delivery(user_id, delivery_key)
+        if existing is not None:
+            return existing
+
+        now = _utcnow_iso()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO subscription_deliveries (
+                    user_id,
+                    delivery_key,
+                    cadence,
+                    sign_name,
+                    card_json,
+                    horoscope_sent,
+                    card_sent,
+                    completed_at,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, 0, 0, NULL, ?, ?)
+                ON CONFLICT(user_id, delivery_key) DO NOTHING
+                """,
+                (
+                    user_id,
+                    delivery_key,
+                    cadence,
+                    sign_name,
+                    json.dumps(card_payload, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+        delivery = self.get_subscription_delivery(user_id, delivery_key)
+        if delivery is None:
+            raise RuntimeError("Could not create subscription delivery state.")
+        return delivery
+
+    def mark_subscription_delivery_part(
+        self,
+        user_id: int,
+        delivery_key: str,
+        part_name: str,
+    ) -> SubscriptionDelivery | None:
+        delivery = self.get_subscription_delivery(user_id, delivery_key)
+        if delivery is None:
+            return None
+
+        horoscope_sent = delivery.horoscope_sent or part_name == "horoscope"
+        card_sent = delivery.card_sent or part_name == "card"
+        now = _utcnow_iso()
+        completed_at = now if horoscope_sent and card_sent else None
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE subscription_deliveries
+                SET horoscope_sent = ?,
+                    card_sent = ?,
+                    completed_at = ?,
+                    updated_at = ?
+                WHERE user_id = ? AND delivery_key = ?
+                """,
+                (
+                    int(horoscope_sent),
+                    int(card_sent),
+                    completed_at,
+                    now,
+                    user_id,
+                    delivery_key,
+                ),
+            )
+        return self.get_subscription_delivery(user_id, delivery_key)
 
     def save_subscription(
         self,

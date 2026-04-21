@@ -18,7 +18,13 @@ from app.cosmic import (
     build_lunar_calendar,
     extract_signs,
 )
-from app.database import DeliverySubscription, JournalEntry, Storage, TarotHistoryEntry
+from app.database import (
+    DeliverySubscription,
+    JournalEntry,
+    Storage,
+    SubscriptionDelivery,
+    TarotHistoryEntry,
+)
 from app.horoscope import (
     ZODIAC_KEYBOARD,
     build_daily_horoscope,
@@ -34,6 +40,7 @@ from app.share_cards import (
     render_welcome_card,
 )
 from app.tarot import (
+    CardDraw,
     build_card_image_url,
     draw_daily_card,
     draw_question_card,
@@ -49,6 +56,7 @@ from app.tarot import (
     format_weekly_caption,
     format_yes_no_caption,
     get_available_decks,
+    get_card_by_id,
     get_card_by_query,
     get_deck_info,
     parse_deck,
@@ -1492,51 +1500,200 @@ class TarotHoroscopeBot:
                 continue
 
             try:
-                self._send_subscription_bundle(subscription)
-                self.storage.update_subscription_delivery(subscription.user_id, delivery_key)
+                completed = self._send_subscription_bundle(subscription, delivery_key)
+                if completed:
+                    self.storage.update_subscription_delivery(
+                        subscription.user_id,
+                        delivery_key,
+                    )
             except TelegramAPIError:
                 LOGGER.exception("Не удалось отправить рассылку пользователю %s", subscription.user_id)
             except Exception:
                 LOGGER.exception("Непредвиденная ошибка при рассылке пользователю %s", subscription.user_id)
 
-    def _send_subscription_bundle(self, subscription: DeliverySubscription) -> None:
+    def _send_subscription_bundle(
+        self,
+        subscription: DeliverySubscription,
+        delivery_key: str,
+    ) -> bool:
         profile = self.storage.get_user_profile(subscription.user_id)
         if profile is None or not profile.zodiac_sign:
             self.api.send_message(
                 subscription.chat_id,
                 "Для продолжения рассылки нужно сохранить знак зодиака через /setsign.",
             )
-            return
+            return False
 
-        if subscription.cadence == "daily":
-            self._send_horoscope(
-                subscription.chat_id,
-                subscription.user_id,
-                None,
-                profile.zodiac_sign,
-                source="subscription",
-            )
-            self._send_daily_card(
-                subscription.chat_id,
-                subscription.user_id,
-                None,
-                source="subscription",
-            )
-            return
-
-        self._send_weekly_horoscope(
-            subscription.chat_id,
-            subscription.user_id,
-            None,
+        delivery = self._get_or_create_subscription_delivery(
+            subscription,
+            delivery_key,
             profile.zodiac_sign,
-            source="subscription",
         )
-        self._send_weekly_card(
+        if delivery.is_complete:
+            return True
+
+        if not delivery.horoscope_sent:
+            delivery = self._send_subscription_horoscope_part(subscription, delivery)
+
+        if not delivery.card_sent:
+            delivery = self._send_subscription_card_part(subscription, delivery)
+
+        return delivery.is_complete
+
+    def _get_or_create_subscription_delivery(
+        self,
+        subscription: DeliverySubscription,
+        delivery_key: str,
+        sign_name: str,
+    ) -> SubscriptionDelivery:
+        existing = self.storage.get_subscription_delivery(subscription.user_id, delivery_key)
+        if existing is not None:
+            return existing
+
+        deck_key = self._get_user_deck_key(subscription.user_id)
+        if subscription.cadence == "daily":
+            draw = draw_daily_card(deck_key=deck_key)
+        else:
+            draw = draw_weekly_card(deck_key=deck_key)
+
+        return self.storage.ensure_subscription_delivery(
+            user_id=subscription.user_id,
+            delivery_key=delivery_key,
+            cadence=subscription.cadence,
+            sign_name=sign_name,
+            card_payload=draw.to_history_payload(),
+        )
+
+    def _build_subscription_card_draw(self, delivery: SubscriptionDelivery) -> CardDraw:
+        payload = delivery.card_payload
+        card_id = payload.get("card_id")
+        if not isinstance(card_id, str) or not card_id:
+            raise ValueError("Subscription delivery is missing a valid tarot card id.")
+
+        card = get_card_by_id(card_id)
+        if card is None:
+            raise ValueError(f"Unknown tarot card id in subscription delivery: {card_id}")
+
+        position_value = payload.get("position")
+        if isinstance(position_value, str) and position_value.strip():
+            position = position_value
+        else:
+            position = "Карта дня" if delivery.cadence == "daily" else "Карта недели"
+
+        deck_key_value = payload.get("deck_key")
+        deck_key = get_deck_info(deck_key_value if isinstance(deck_key_value, str) else "").key
+
+        return CardDraw(
+            position=position,
+            card=card,
+            is_reversed=bool(payload.get("is_reversed")),
+            deck_key=deck_key,
+        )
+
+    def _send_subscription_horoscope_part(
+        self,
+        subscription: DeliverySubscription,
+        delivery: SubscriptionDelivery,
+    ) -> SubscriptionDelivery:
+        sign = parse_sign(delivery.sign_name)
+        if sign is None:
+            raise ValueError(f"Unknown zodiac sign in subscription delivery: {delivery.sign_name}")
+
+        if delivery.cadence == "daily":
+            message = build_daily_horoscope(sign)
+            entry_type = "horoscope-daily"
+            title = f"Гороскоп на день: {sign.name}"
+            summary = f"Дневной прогноз для знака {sign.name}."
+        else:
+            message = build_weekly_horoscope(sign)
+            entry_type = "horoscope-weekly"
+            title = f"Гороскоп на неделю: {sign.name}"
+            summary = f"Недельный прогноз для знака {sign.name}."
+
+        self.api.send_message(
             subscription.chat_id,
-            subscription.user_id,
-            None,
-            source="subscription",
+            message,
+            reply_markup={"remove_keyboard": True},
         )
+        updated = self.storage.mark_subscription_delivery_part(
+            subscription.user_id,
+            delivery.delivery_key,
+            "horoscope",
+        )
+        if updated is None:
+            raise RuntimeError("Could not update subscription delivery after horoscope send.")
+
+        try:
+            self.storage.record_journal_entry(
+                chat_id=subscription.chat_id,
+                user_id=subscription.user_id,
+                entry_type=entry_type,
+                title=title,
+                summary=summary,
+                source="subscription",
+                details={"sign": sign.name},
+            )
+        except Exception:
+            LOGGER.exception(
+                "Не удалось записать в журнал астро-часть рассылки %s для %s",
+                delivery.delivery_key,
+                subscription.user_id,
+            )
+        return updated
+
+    def _send_subscription_card_part(
+        self,
+        subscription: DeliverySubscription,
+        delivery: SubscriptionDelivery,
+    ) -> SubscriptionDelivery:
+        draw = self._build_subscription_card_draw(delivery)
+
+        if delivery.cadence == "daily":
+            spread_type = "daily"
+            entry_type = "tarot-daily"
+            title = f"Карта дня: {draw.card.name_ru}"
+            summary = f"{get_deck_info(draw.deck_key).name_ru}, {draw.orientation_label}."
+            self._send_daily_card_message(subscription.chat_id, None, draw)
+        else:
+            spread_type = "weekly"
+            entry_type = "tarot-weekly"
+            title = f"Карта недели: {draw.card.name_ru}"
+            summary = f"{get_deck_info(draw.deck_key).name_ru}, {draw.orientation_label}."
+            self._send_weekly_card_message(subscription.chat_id, None, draw)
+
+        updated = self.storage.mark_subscription_delivery_part(
+            subscription.user_id,
+            delivery.delivery_key,
+            "card",
+        )
+        if updated is None:
+            raise RuntimeError("Could not update subscription delivery after card send.")
+
+        try:
+            payload = draw.to_history_payload()
+            self.storage.record_tarot_history(
+                chat_id=subscription.chat_id,
+                user_id=subscription.user_id,
+                spread_type=spread_type,
+                deck_key=draw.deck_key,
+                cards_payload=[payload],
+            )
+            self.storage.record_journal_entry(
+                chat_id=subscription.chat_id,
+                user_id=subscription.user_id,
+                entry_type=entry_type,
+                title=title,
+                summary=summary,
+                source="subscription",
+                details=payload,
+            )
+        except Exception:
+            LOGGER.exception(
+                "Не удалось записать в историю таро-часть рассылки %s для %s",
+                delivery.delivery_key,
+                subscription.user_id,
+            )
+        return updated
 
     def _subscription_due_key(
         self,
@@ -1589,6 +1746,41 @@ class TarotHoroscopeBot:
             source=source,
             details=draw.to_history_payload(),
         )
+        self._send_daily_card_message(chat_id, reply_to_message_id, draw)
+
+    def _send_weekly_card(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int | None,
+        source: str = "manual",
+    ) -> None:
+        deck_key = self._get_user_deck_key(user_id)
+        draw = draw_weekly_card(deck_key=deck_key)
+        self.storage.record_tarot_history(
+            chat_id=chat_id,
+            user_id=user_id,
+            spread_type="weekly",
+            deck_key=draw.deck_key,
+            cards_payload=[draw.to_history_payload()],
+        )
+        self.storage.record_journal_entry(
+            chat_id=chat_id,
+            user_id=user_id,
+            entry_type="tarot-weekly",
+            title=f"Карта недели: {draw.card.name_ru}",
+            summary=f"{get_deck_info(draw.deck_key).name_ru}, {draw.orientation_label}.",
+            source=source,
+            details=draw.to_history_payload(),
+        )
+        self._send_weekly_card_message(chat_id, reply_to_message_id, draw)
+
+    def _send_daily_card_message(
+        self,
+        chat_id: int,
+        reply_to_message_id: int | None,
+        draw: CardDraw,
+    ) -> None:
         caption = format_daily_caption(draw)
         share_markup = self._build_share_keyboard(caption, button_text="Поделиться картой")
 
@@ -1622,31 +1814,12 @@ class TarotHoroscopeBot:
             reply_markup=share_markup,
         )
 
-    def _send_weekly_card(
+    def _send_weekly_card_message(
         self,
         chat_id: int,
-        user_id: int,
         reply_to_message_id: int | None,
-        source: str = "manual",
+        draw: CardDraw,
     ) -> None:
-        deck_key = self._get_user_deck_key(user_id)
-        draw = draw_weekly_card(deck_key=deck_key)
-        self.storage.record_tarot_history(
-            chat_id=chat_id,
-            user_id=user_id,
-            spread_type="weekly",
-            deck_key=draw.deck_key,
-            cards_payload=[draw.to_history_payload()],
-        )
-        self.storage.record_journal_entry(
-            chat_id=chat_id,
-            user_id=user_id,
-            entry_type="tarot-weekly",
-            title=f"Карта недели: {draw.card.name_ru}",
-            summary=f"{get_deck_info(draw.deck_key).name_ru}, {draw.orientation_label}.",
-            source=source,
-            details=draw.to_history_payload(),
-        )
         self.api.send_photo(
             chat_id,
             photo_url=draw.image_url,

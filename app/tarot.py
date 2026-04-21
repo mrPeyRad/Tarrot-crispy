@@ -251,6 +251,7 @@ def build_tarot_deck() -> tuple[TarotCard, ...]:
 
 
 TAROT_DECK = build_tarot_deck()
+_CARD_ID_INDEX = {card.card_id: card for card in TAROT_DECK}
 
 _SEARCH_INDEX: dict[str, TarotCard] = {}
 for _card in TAROT_DECK:
@@ -333,6 +334,10 @@ def _minor_rank_number(card: TarotCard) -> int:
     if card.arcana != "minor":
         raise ValueError("Rank number is only available for minor arcana cards.")
     return int(card.card_id.split("-")[1])
+
+
+def get_card_by_id(card_id: str) -> TarotCard | None:
+    return _CARD_ID_INDEX.get(card_id)
 
 
 def get_card_by_query(query: str) -> TarotCard | None:

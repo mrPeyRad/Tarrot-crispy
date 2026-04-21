@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime as real_datetime, timezone
 from pathlib import Path
 import random
 import tempfile
@@ -48,6 +48,7 @@ from app.tarot import (
     parse_deck,
     search_cards,
 )
+from app.telegram_api import TelegramAPIError
 
 from PIL import Image
 
@@ -408,6 +409,58 @@ class StorageTests(unittest.TestCase):
             storage.mark_incoming_update_done(42)
             self.assertIsNone(storage.claim_next_incoming_update())
 
+    def test_storage_tracks_subscription_delivery_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "bot.sqlite3"
+            storage = Storage(db_path)
+
+            first_payload = {
+                "position": "Карта дня",
+                "card_id": "major-18",
+                "name_ru": "Луна",
+                "is_reversed": False,
+                "deck_key": "minimal",
+            }
+            second_payload = {
+                "position": "Карта дня",
+                "card_id": "major-19",
+                "name_ru": "Солнце",
+                "is_reversed": True,
+                "deck_key": "rider-waite",
+            }
+
+            delivery = storage.ensure_subscription_delivery(
+                user_id=1,
+                delivery_key="daily:2026-04-21",
+                cadence="daily",
+                sign_name="Овен",
+                card_payload=first_payload,
+            )
+            self.assertEqual(delivery.card_payload["card_id"], "major-18")
+
+            same_delivery = storage.ensure_subscription_delivery(
+                user_id=1,
+                delivery_key="daily:2026-04-21",
+                cadence="daily",
+                sign_name="Телец",
+                card_payload=second_payload,
+            )
+            self.assertEqual(same_delivery.card_payload["card_id"], "major-18")
+            self.assertEqual(same_delivery.sign_name, "Овен")
+
+            partial = storage.mark_subscription_delivery_part(1, "daily:2026-04-21", "horoscope")
+            self.assertIsNotNone(partial)
+            self.assertTrue(partial.horoscope_sent)
+            self.assertFalse(partial.card_sent)
+            self.assertFalse(partial.is_complete)
+
+            completed = storage.mark_subscription_delivery_part(1, "daily:2026-04-21", "card")
+            self.assertIsNotNone(completed)
+            self.assertTrue(completed.horoscope_sent)
+            self.assertTrue(completed.card_sent)
+            self.assertTrue(completed.is_complete)
+            self.assertIsNotNone(completed.completed_at)
+
 
 class BotParsingTests(unittest.TestCase):
     def test_process_pending_updates_marks_successful_update_done(self) -> None:
@@ -449,6 +502,125 @@ class BotParsingTests(unittest.TestCase):
             claimed_again = storage.claim_next_incoming_update()
             self.assertIsNotNone(claimed_again)
             self.assertEqual(claimed_again["update_id"], 8)
+
+    def test_dispatch_due_subscriptions_resumes_partial_daily_delivery(self) -> None:
+        class FakeAPI:
+            def __init__(self) -> None:
+                self.messages: list[dict[str, object]] = []
+                self.photos: list[dict[str, object]] = []
+                self.fail_first_photo = True
+
+            def send_message(
+                self,
+                chat_id: int,
+                text: str,
+                reply_to_message_id: int | None = None,
+                reply_markup: dict[str, object] | None = None,
+            ) -> dict[str, object]:
+                self.messages.append(
+                    {
+                        "chat_id": chat_id,
+                        "text": text,
+                        "reply_to_message_id": reply_to_message_id,
+                        "reply_markup": reply_markup,
+                    }
+                )
+                return {"ok": True}
+
+            def send_photo(
+                self,
+                chat_id: int,
+                photo_url: str | None = None,
+                caption: str = "",
+                reply_to_message_id: int | None = None,
+                reply_markup: dict[str, object] | None = None,
+                photo_bytes: bytes | None = None,
+                filename: str = "card.png",
+            ) -> dict[str, object]:
+                if self.fail_first_photo:
+                    self.fail_first_photo = False
+                    raise TelegramAPIError("photo failed")
+
+                self.photos.append(
+                    {
+                        "chat_id": chat_id,
+                        "photo_url": photo_url,
+                        "caption": caption,
+                        "reply_to_message_id": reply_to_message_id,
+                        "reply_markup": reply_markup,
+                        "photo_bytes": photo_bytes,
+                        "filename": filename,
+                    }
+                )
+                return {"ok": True}
+
+        fake_now = real_datetime(2026, 4, 21, 10, 0, tzinfo=timezone.utc)
+        delivery_key = "daily:2026-04-21"
+        fixed_draw = CardDraw(
+            position="Карта дня",
+            card=TAROT_DECK[18],
+            is_reversed=False,
+            deck_key="minimal",
+        )
+
+        class FrozenDateTime(real_datetime):
+            @classmethod
+            def now(cls, tz: timezone | None = None) -> real_datetime:
+                if tz is not None:
+                    return fake_now.astimezone(tz)
+                return fake_now
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            storage = Storage(Path(tmp_dir) / "bot.sqlite3")
+            storage.upsert_user(
+                user_id=1,
+                username="tester",
+                first_name="Test",
+                last_name="User",
+            )
+            storage.save_zodiac_sign(1, "Овен")
+            storage.save_subscription(
+                user_id=1,
+                chat_id=100,
+                cadence="daily",
+                hour_local=9,
+                minute_local=0,
+            )
+
+            bot = TarotHoroscopeBot.__new__(TarotHoroscopeBot)
+            bot.storage = storage
+            bot.api = FakeAPI()
+            bot._bot_username = "@wisdom_bot"
+
+            with (
+                patch("app.bot.datetime", FrozenDateTime),
+                patch("app.bot.draw_daily_card", return_value=fixed_draw) as draw_mock,
+                patch("app.bot.render_tarot_share_card", return_value=None),
+            ):
+                bot._dispatch_due_subscriptions()
+
+                first_delivery = storage.get_subscription_delivery(1, delivery_key)
+                self.assertIsNotNone(first_delivery)
+                self.assertTrue(first_delivery.horoscope_sent)
+                self.assertFalse(first_delivery.card_sent)
+                self.assertEqual(first_delivery.card_payload["card_id"], fixed_draw.card.card_id)
+                self.assertEqual(len(bot.api.messages), 1)
+                self.assertEqual(len(bot.api.photos), 0)
+                self.assertIsNone(storage.get_subscription(1).last_delivery_key)
+
+                bot._dispatch_due_subscriptions()
+
+            final_delivery = storage.get_subscription_delivery(1, delivery_key)
+            self.assertIsNotNone(final_delivery)
+            self.assertTrue(final_delivery.is_complete)
+            self.assertEqual(storage.get_subscription(1).last_delivery_key, delivery_key)
+            self.assertEqual(len(bot.api.messages), 1)
+            self.assertEqual(len(bot.api.photos), 1)
+            self.assertEqual(draw_mock.call_count, 1)
+
+            entry_types = [entry.entry_type for entry in storage.get_recent_journal_entries(1, limit=10)]
+            self.assertEqual(entry_types.count("horoscope-daily"), 1)
+            self.assertEqual(entry_types.count("tarot-daily"), 1)
 
     def test_configure_public_profile_pushes_descriptions_to_telegram(self) -> None:
         class FakeAPI:
