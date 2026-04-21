@@ -159,6 +159,7 @@ class TarotHoroscopeBot:
             model=settings.openai_model,
         )
         self._bot_username = settings.bot_username
+        self._next_subscription_dispatch_at = 0.0
 
     @classmethod
     def from_project_root(cls, project_root: Path) -> "TarotHoroscopeBot":
@@ -185,13 +186,17 @@ class TarotHoroscopeBot:
         while True:
             try:
                 self._dispatch_due_subscriptions()
+                self._process_pending_updates(limit=50)
                 updates = self.api.get_updates(
                     offset=offset,
                     timeout=self.settings.polling_timeout,
                 )
                 for update in updates:
-                    offset = int(update["update_id"]) + 1
-                    self._handle_update(update)
+                    self._enqueue_update(update)
+                    update_id = update.get("update_id")
+                    if isinstance(update_id, int):
+                        offset = update_id + 1
+                self._process_pending_updates(limit=50)
             except TelegramAPIError as exc:
                 LOGGER.exception("Ошибка Telegram API: %s", exc)
                 time.sleep(3)
@@ -213,13 +218,17 @@ class TarotHoroscopeBot:
         )
 
         self._dispatch_due_subscriptions()
+        self._process_pending_updates(limit=50)
+        self._next_subscription_dispatch_at = (
+            time.monotonic() + max(1, self.settings.subscription_poll_interval)
+        )
         server = TelegramWebhookServer(
             host=self.settings.webhook_host,
             port=self.settings.webhook_port,
             webhook_path=self.settings.webhook_path,
-            on_update=self._handle_update,
-            on_tick=self._dispatch_due_subscriptions,
-            tick_interval=self.settings.subscription_poll_interval,
+            on_update=self._enqueue_update,
+            on_tick=self._run_background_cycle,
+            tick_interval=1,
             secret_token=self.settings.webhook_secret_token,
             logger=LOGGER,
         )
@@ -237,6 +246,51 @@ class TarotHoroscopeBot:
             LOGGER.info("Получен сигнал остановки, завершаю webhook-сервер.")
         finally:
             server.shutdown()
+
+    def _run_background_cycle(self) -> None:
+        self._process_pending_updates(limit=20)
+        now_monotonic = time.monotonic()
+        if now_monotonic >= self._next_subscription_dispatch_at:
+            self._dispatch_due_subscriptions()
+            self._next_subscription_dispatch_at = (
+                now_monotonic + max(1, self.settings.subscription_poll_interval)
+            )
+
+    def _enqueue_update(self, update: dict[str, Any]) -> None:
+        queued = self.storage.enqueue_incoming_update(update)
+        update_id = update.get("update_id")
+        if not isinstance(update_id, int):
+            raise ValueError("Telegram update must contain an integer update_id.")
+        if queued:
+            LOGGER.debug("Апдейт %s поставлен в очередь обработки.", update_id)
+
+    def _process_pending_updates(self, limit: int | None = None) -> int:
+        processed = 0
+        while limit is None or processed < limit:
+            update = self.storage.claim_next_incoming_update()
+            if update is None:
+                break
+
+            update_id = update.get("update_id")
+            if not isinstance(update_id, int):
+                LOGGER.warning("Нашёл апдейт без корректного update_id, пропускаю.")
+                processed += 1
+                continue
+
+            try:
+                self._handle_update(update)
+            except Exception as exc:
+                self.storage.release_incoming_update(
+                    update_id,
+                    f"{type(exc).__name__}: {exc}",
+                )
+                LOGGER.exception("Не удалось обработать апдейт %s", update_id)
+                break
+
+            self.storage.mark_incoming_update_done(update_id)
+            processed += 1
+
+        return processed
 
     def _handle_update(self, update: dict[str, Any]) -> None:
         message = update.get("message")

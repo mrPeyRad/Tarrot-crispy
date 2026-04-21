@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 
 from app.tarot import CardDraw, get_deck_info
 
@@ -8,6 +9,9 @@ try:
     from openai import OpenAI
 except ImportError:  # pragma: no cover - depends on optional dependency
     OpenAI = None  # type: ignore[assignment]
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,11 +63,19 @@ class TarotQuestionInterpreter:
             "Ограничение: максимум 650 символов.\n"
             "Не давай медицинских, юридических и финансовых гарантий.\n"
         )
-        response = client.responses.create(
-            model=self.model,
-            reasoning={"effort": "low"},
-            input=prompt,
-        )
+        try:
+            response = client.responses.create(
+                model=self.model,
+                reasoning={"effort": "low"},
+                input=prompt,
+            )
+        except Exception:
+            LOGGER.exception("AI-интерпретация таро временно недоступна")
+            return TarotQuestionInterpretation(
+                text=build_fallback_question_reading(question, draw),
+                used_ai=False,
+                note="AI временно недоступен, показал базовую трактовку по карте.",
+            )
         text = (response.output_text or "").strip()
         if not text:
             return TarotQuestionInterpretation(

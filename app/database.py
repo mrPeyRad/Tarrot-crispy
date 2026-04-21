@@ -88,6 +88,7 @@ class Storage:
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, factory=_ManagedConnection)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 5000")
         return connection
 
     def _init_schema(self) -> None:
@@ -155,6 +156,19 @@ class Storage:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS incoming_updates (
+                    update_id INTEGER PRIMARY KEY,
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_incoming_updates_status_update
+                ON incoming_updates (status, update_id ASC);
                 """
             )
             self._ensure_column(
@@ -168,6 +182,14 @@ class Storage:
                 table_name="delivery_subscriptions",
                 column_name="minute_local",
                 column_definition="INTEGER NOT NULL DEFAULT 0",
+            )
+            connection.execute(
+                """
+                UPDATE incoming_updates
+                SET status = 'pending', updated_at = ?
+                WHERE status = 'processing'
+                """,
+                (_utcnow_iso(),),
             )
 
     @staticmethod
@@ -600,6 +622,100 @@ class Storage:
                 (user_id,),
             ).fetchone()
         return int(row["total"]) if row else 0
+
+    def enqueue_incoming_update(self, update: dict[str, Any]) -> bool:
+        update_id = update.get("update_id")
+        if not isinstance(update_id, int):
+            return False
+
+        now = _utcnow_iso()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO incoming_updates (
+                    update_id,
+                    payload_json,
+                    status,
+                    attempt_count,
+                    last_error,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, 'pending', 0, NULL, ?, ?)
+                ON CONFLICT(update_id) DO NOTHING
+                """,
+                (
+                    update_id,
+                    json.dumps(update, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+        return cursor.rowcount > 0
+
+    def claim_next_incoming_update(self) -> dict[str, Any] | None:
+        now = _utcnow_iso()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT update_id, payload_json
+                FROM incoming_updates
+                WHERE status = 'pending'
+                ORDER BY update_id ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                return None
+
+            cursor = connection.execute(
+                """
+                UPDATE incoming_updates
+                SET status = 'processing',
+                    attempt_count = attempt_count + 1,
+                    updated_at = ?
+                WHERE update_id = ? AND status = 'pending'
+                """,
+                (now, int(row["update_id"])),
+            )
+            if cursor.rowcount == 0:
+                return None
+
+        try:
+            payload = json.loads(row["payload_json"])
+        except json.JSONDecodeError:
+            self.mark_incoming_update_done(int(row["update_id"]))
+            return None
+        if not isinstance(payload, dict):
+            self.mark_incoming_update_done(int(row["update_id"]))
+            return None
+        payload.setdefault("update_id", int(row["update_id"]))
+        return payload
+
+    def mark_incoming_update_done(self, update_id: int) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE incoming_updates
+                SET status = 'done',
+                    last_error = NULL,
+                    updated_at = ?
+                WHERE update_id = ?
+                """,
+                (_utcnow_iso(), update_id),
+            )
+
+    def release_incoming_update(self, update_id: int, error_message: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE incoming_updates
+                SET status = 'pending',
+                    last_error = ?,
+                    updated_at = ?
+                WHERE update_id = ?
+                """,
+                (error_message[:1000], _utcnow_iso(), update_id),
+            )
 
     def save_subscription(
         self,

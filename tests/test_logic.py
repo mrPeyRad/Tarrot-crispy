@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from app.ai import build_fallback_question_reading
+from app.ai import TarotQuestionInterpreter, build_fallback_question_reading
 from app.bot import HOROSCOPE_TRIGGERS, YES_NO_TRIGGERS, TarotHoroscopeBot
 from app.biorhythm import build_biorhythm_report, build_biorhythm_snapshot, parse_birth_date
 from app.config import (
@@ -240,6 +240,27 @@ class AITests(unittest.TestCase):
         self.assertIn("Стоит ли менять работу?", text)
         self.assertIn(draw.card.name_ru, text)
 
+    def test_interpreter_falls_back_when_ai_call_raises(self) -> None:
+        draw = draw_question_card(deck_key="minimal")
+        interpreter = TarotQuestionInterpreter(api_key="test-key", model="gpt-5-mini")
+
+        class FakeResponses:
+            def create(self, **_: object) -> object:
+                raise RuntimeError("boom")
+
+        class FakeClient:
+            responses = FakeResponses()
+
+        with patch.object(interpreter, "_get_client", return_value=FakeClient()):
+            result = interpreter.interpret("Стоит ли менять работу?", draw)
+
+        self.assertFalse(result.used_ai)
+        self.assertIn(draw.card.name_ru, result.text)
+        self.assertEqual(
+            result.note,
+            "AI временно недоступен, показал базовую трактовку по карте.",
+        )
+
 
 class StorageTests(unittest.TestCase):
     def test_storage_persists_profile_history_journal_and_subscription(self) -> None:
@@ -367,8 +388,68 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(card_stats["Солнце"], 1)
             self.assertEqual(storage.get_tarot_card_stats(1, limit=1), (("Луна", 2),))
 
+    def test_storage_retries_incoming_updates_without_losing_them(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "bot.sqlite3"
+            storage = Storage(db_path)
+            update = {"update_id": 42, "message": {"message_id": 1, "text": "/start"}}
+
+            self.assertTrue(storage.enqueue_incoming_update(update))
+            self.assertFalse(storage.enqueue_incoming_update(update))
+
+            claimed = storage.claim_next_incoming_update()
+            self.assertEqual(claimed["update_id"], 42)
+            self.assertIsNone(storage.claim_next_incoming_update())
+
+            storage.release_incoming_update(42, "RuntimeError: boom")
+            claimed_again = storage.claim_next_incoming_update()
+            self.assertEqual(claimed_again["update_id"], 42)
+
+            storage.mark_incoming_update_done(42)
+            self.assertIsNone(storage.claim_next_incoming_update())
+
 
 class BotParsingTests(unittest.TestCase):
+    def test_process_pending_updates_marks_successful_update_done(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            storage = Storage(Path(tmp_dir) / "bot.sqlite3")
+            storage.enqueue_incoming_update(
+                {"update_id": 7, "message": {"message_id": 1, "text": "/start"}}
+            )
+
+            bot = TarotHoroscopeBot.__new__(TarotHoroscopeBot)
+            bot.storage = storage
+            handled: list[int] = []
+            bot._handle_update = lambda update: handled.append(update["update_id"])
+
+            processed = bot._process_pending_updates()
+
+            self.assertEqual(processed, 1)
+            self.assertEqual(handled, [7])
+            self.assertIsNone(storage.claim_next_incoming_update())
+
+    def test_process_pending_updates_requeues_failed_update(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            storage = Storage(Path(tmp_dir) / "bot.sqlite3")
+            storage.enqueue_incoming_update(
+                {"update_id": 8, "message": {"message_id": 1, "text": "/ask hi"}}
+            )
+
+            bot = TarotHoroscopeBot.__new__(TarotHoroscopeBot)
+            bot.storage = storage
+
+            def broken_handler(update: dict[str, object]) -> None:
+                raise RuntimeError(f"failed {update['update_id']}")
+
+            bot._handle_update = broken_handler
+
+            processed = bot._process_pending_updates()
+
+            self.assertEqual(processed, 0)
+            claimed_again = storage.claim_next_incoming_update()
+            self.assertIsNotNone(claimed_again)
+            self.assertEqual(claimed_again["update_id"], 8)
+
     def test_configure_public_profile_pushes_descriptions_to_telegram(self) -> None:
         class FakeAPI:
             def __init__(self) -> None:

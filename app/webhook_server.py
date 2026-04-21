@@ -4,7 +4,6 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
-import queue
 import threading
 from typing import Any, Callable
 from urllib.parse import urlsplit
@@ -34,13 +33,7 @@ class TelegramWebhookServer:
         self._tick_interval = max(1, tick_interval)
         self._secret_token = secret_token
         self._logger = logger or logging.getLogger(__name__)
-        self._updates: queue.Queue[dict[str, Any]] = queue.Queue()
         self._stop_event = threading.Event()
-        self._worker = threading.Thread(
-            target=self._worker_loop,
-            name="telegram-webhook-worker",
-            daemon=True,
-        )
         self._ticker: threading.Thread | None = None
         if self._on_tick is not None:
             self._ticker = threading.Thread(
@@ -58,7 +51,6 @@ class TelegramWebhookServer:
         return self._host, self._port
 
     def serve_forever(self) -> None:
-        self._worker.start()
         if self._ticker is not None:
             self._ticker.start()
         self._server.serve_forever()
@@ -67,13 +59,11 @@ class TelegramWebhookServer:
         self._stop_event.set()
         self._server.shutdown()
         self._server.server_close()
-        self._updates.put({})
-        self._worker.join(timeout=2)
         if self._ticker is not None:
             self._ticker.join(timeout=2)
 
     def _build_handler(self) -> type[BaseHTTPRequestHandler]:
-        updates = self._updates
+        on_update = self._on_update
         webhook_path = self._webhook_path
         secret_token = self._secret_token
         logger = self._logger
@@ -129,7 +119,16 @@ class TelegramWebhookServer:
                     )
                     return
 
-                updates.put(payload)
+                try:
+                    on_update(payload)
+                except Exception:
+                    logger.exception("Webhook payload could not be stored")
+                    self._write_json(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        {"ok": False, "error": "Webhook processing failed"},
+                    )
+                    return
+
                 self._write_json(HTTPStatus.OK, {"ok": True})
 
             def log_message(self, format: str, *args: object) -> None:
@@ -144,24 +143,6 @@ class TelegramWebhookServer:
                 self.wfile.write(body)
 
         return Handler
-
-    def _worker_loop(self) -> None:
-        while not self._stop_event.is_set():
-            try:
-                update = self._updates.get(timeout=0.5)
-            except queue.Empty:
-                continue
-
-            if not update:
-                self._updates.task_done()
-                continue
-
-            try:
-                self._on_update(update)
-            except Exception:
-                self._logger.exception("Unhandled error while processing webhook update")
-            finally:
-                self._updates.task_done()
 
     def _ticker_loop(self) -> None:
         if self._on_tick is None:
