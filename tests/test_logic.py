@@ -463,6 +463,40 @@ class StorageTests(unittest.TestCase):
 
 
 class BotParsingTests(unittest.TestCase):
+    class FakeMessageAPI:
+        def __init__(self) -> None:
+            self.messages: list[dict[str, object]] = []
+
+        def send_message(
+            self,
+            chat_id: int,
+            text: str,
+            reply_to_message_id: int | None = None,
+            reply_markup: dict[str, object] | None = None,
+        ) -> dict[str, object]:
+            self.messages.append(
+                {
+                    "chat_id": chat_id,
+                    "text": text,
+                    "reply_to_message_id": reply_to_message_id,
+                    "reply_markup": reply_markup,
+                }
+            )
+            return {"ok": True}
+
+    def _build_bot(self, tmp_dir: str) -> TarotHoroscopeBot:
+        storage = Storage(Path(tmp_dir) / "bot.sqlite3")
+        storage.upsert_user(
+            user_id=1,
+            username="tester",
+            first_name="Test",
+            last_name=None,
+        )
+        bot = TarotHoroscopeBot.__new__(TarotHoroscopeBot)
+        bot.storage = storage
+        bot.api = self.FakeMessageAPI()
+        return bot
+
     def test_process_pending_updates_marks_successful_update_done(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             storage = Storage(Path(tmp_dir) / "bot.sqlite3")
@@ -502,6 +536,76 @@ class BotParsingTests(unittest.TestCase):
             claimed_again = storage.claim_next_incoming_update()
             self.assertIsNotNone(claimed_again)
             self.assertEqual(claimed_again["update_id"], 8)
+
+    def test_daily_horoscope_with_explicit_sign_keeps_saved_profile_sign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bot = self._build_bot(tmp_dir)
+            bot.storage.save_zodiac_sign(1, "Овен")
+
+            bot._handle_horoscope_request(100, 1, 10, "Лев")
+
+            profile = bot.storage.get_user_profile(1)
+            journal_entries = bot.storage.get_recent_journal_entries(1, limit=1)
+            self.assertIsNotNone(profile)
+            self.assertEqual(profile.zodiac_sign, "Овен")
+            self.assertEqual(journal_entries[0].details["sign"], "Лев")
+
+    def test_weekly_horoscope_with_explicit_sign_keeps_saved_profile_sign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bot = self._build_bot(tmp_dir)
+            bot.storage.save_zodiac_sign(1, "Овен")
+
+            bot._handle_weekly_horoscope_request(100, 1, 10, "Лев")
+
+            profile = bot.storage.get_user_profile(1)
+            journal_entries = bot.storage.get_recent_journal_entries(1, limit=1)
+            self.assertIsNotNone(profile)
+            self.assertEqual(profile.zodiac_sign, "Овен")
+            self.assertEqual(journal_entries[0].details["sign"], "Лев")
+
+    def test_pending_sign_for_explicit_horoscope_request_does_not_override_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bot = self._build_bot(tmp_dir)
+            bot.storage.save_zodiac_sign(1, "Овен")
+
+            bot._handle_horoscope_request(100, 1, 10, "не знак")
+
+            state = bot.storage.get_conversation_state(100, 1)
+            self.assertIsNotNone(state)
+            self.assertFalse(state.payload["save_sign"])
+            self.assertEqual(
+                bot.api.messages[-1]["text"],
+                "Не распознал знак. Выбери его с клавиатуры или напиши текстом. "
+                "Сохранённый знак в профиле не изменится.",
+            )
+
+            handled = bot._handle_pending_state(100, 1, 10, "Лев", state.state, state.payload)
+
+            profile = bot.storage.get_user_profile(1)
+            journal_entries = bot.storage.get_recent_journal_entries(1, limit=1)
+            self.assertTrue(handled)
+            self.assertIsNotNone(profile)
+            self.assertEqual(profile.zodiac_sign, "Овен")
+            self.assertEqual(journal_entries[0].details["sign"], "Лев")
+
+    def test_first_horoscope_request_without_saved_sign_sets_default_sign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bot = self._build_bot(tmp_dir)
+
+            bot._handle_horoscope_request(100, 1, 10, "")
+
+            state = bot.storage.get_conversation_state(100, 1)
+            self.assertIsNotNone(state)
+            self.assertTrue(state.payload["save_sign"])
+
+            handled = bot._handle_pending_state(100, 1, 10, "Лев", state.state, state.payload)
+
+            profile = bot.storage.get_user_profile(1)
+            journal_entries = bot.storage.get_recent_journal_entries(1, limit=1)
+            self.assertTrue(handled)
+            self.assertIsNotNone(profile)
+            self.assertEqual(profile.zodiac_sign, "Лев")
+            self.assertEqual(journal_entries[0].details["sign"], "Лев")
 
     def test_dispatch_due_subscriptions_resumes_partial_daily_delivery(self) -> None:
         class FakeAPI:

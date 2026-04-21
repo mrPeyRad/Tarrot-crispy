@@ -527,16 +527,25 @@ class TarotHoroscopeBot:
                 if self._normalize_text(text) in MENU_TRIGGERS:
                     self._open_main_menu(chat_id, user_id, reply_to_message_id)
                     return True
-                self._ask_for_sign(chat_id, reply_to_message_id, invalid_value=True)
+                self._ask_for_sign(
+                    chat_id,
+                    reply_to_message_id,
+                    invalid_value=True,
+                    save_to_profile=payload.get("save_sign", True),
+                )
                 return True
 
-            self.storage.save_zodiac_sign(user_id, sign.name)
-            self.storage.clear_conversation_state(chat_id, user_id)
             next_action = payload.get("next", "horoscope")
+            if payload.get("save_sign", True):
+                self.storage.save_zodiac_sign(user_id, sign.name)
+            self.storage.clear_conversation_state(chat_id, user_id)
             if next_action == "set_sign":
                 self.api.send_message(
                     chat_id,
-                    f"Сохранил знак зодиака: {sign.name}. Теперь гороскоп можно получать без повторного выбора.",
+                    (
+                        f"Сохранил знак зодиака: {sign.name}. Теперь гороскоп можно получать без повторного выбора. "
+                        "А для разового прогноза другого знака используй /horoscope [знак] или /week [знак]."
+                    ),
                     reply_to_message_id=reply_to_message_id,
                     reply_markup={"remove_keyboard": True},
                 )
@@ -787,9 +796,11 @@ class TarotHoroscopeBot:
             "• колода — переключить визуал карт\n\n"
             "Полезные команды:\n"
             "/card, /ask, /spread3, /yesno, /relationship, /cardinfo\n"
-            "/horoscope, /week, /moon, /compat, /astroalert\n"
+            "/horoscope [знак], /week [знак], /moon, /compat, /astroalert\n"
             "/rune, /8ball, /biorhythm, /journal, /profile\n"
             "/deck, /subscribe, /unsubscribe, /setsign, /cancel\n\n"
+            "Чтобы посмотреть другой знак разово, напиши /horoscope [знак] или /week [знак]. "
+            "Сохранённый знак меняется только через /setsign.\n\n"
             "Текстовые триггеры тоже работают. В группе обычные фразы видны боту, если у него отключён privacy mode в BotFather."
         )
         self.api.send_message(
@@ -858,7 +869,7 @@ class TarotHoroscopeBot:
         if profile is None:
             self.api.send_message(
                 chat_id,
-                "Профиль ещё не создан. Напиши /setsign или /horoscope, и я всё запомню.",
+                "Профиль ещё не создан. Напиши /setsign или просто /horoscope без знака, и я всё запомню.",
                 reply_to_message_id=reply_to_message_id,
             )
             return
@@ -891,8 +902,9 @@ class TarotHoroscopeBot:
 
         lines.append("")
         lines.append(
-            "Чтобы обновить знак, используй /setsign. Колоду можно сменить через /deck, "
-            "дневник открыть через /journal, а биоритмы посмотреть через /biorhythm."
+            "Чтобы обновить знак по умолчанию, используй /setsign. Разовый прогноз для другого знака можно "
+            "посмотреть через /horoscope [знак] или /week [знак] без смены профиля. Колоду можно сменить "
+            "через /deck, дневник открыть через /journal, а биоритмы посмотреть через /biorhythm."
         )
         self.api.send_message(
             chat_id,
@@ -922,7 +934,10 @@ class TarotHoroscopeBot:
         self.storage.clear_conversation_state(chat_id, user_id)
         self.api.send_message(
             chat_id,
-            f"Сохранил знак зодиака: {sign.name}. Теперь /horoscope будет работать сразу.",
+            (
+                f"Сохранил знак зодиака: {sign.name}. Теперь /horoscope будет работать сразу. "
+                "А для разового прогноза другого знака можно писать /horoscope [знак] или /week [знак]."
+            ),
             reply_to_message_id=reply_to_message_id,
             reply_markup={"remove_keyboard": True},
         )
@@ -941,12 +956,16 @@ class TarotHoroscopeBot:
                     chat_id,
                     user_id,
                     "await_sign",
-                    {"next": "horoscope"},
+                    {"next": "horoscope", "save_sign": False},
                 )
-                self._ask_for_sign(chat_id, reply_to_message_id, invalid_value=True)
+                self._ask_for_sign(
+                    chat_id,
+                    reply_to_message_id,
+                    invalid_value=True,
+                    save_to_profile=False,
+                )
                 return
 
-            self.storage.save_zodiac_sign(user_id, sign.name)
             self.storage.clear_conversation_state(chat_id, user_id)
             self._send_horoscope(chat_id, user_id, reply_to_message_id, sign.name)
             return
@@ -960,7 +979,7 @@ class TarotHoroscopeBot:
             chat_id,
             user_id,
             "await_sign",
-            {"next": "horoscope"},
+            {"next": "horoscope", "save_sign": True},
         )
         self._ask_for_sign(chat_id, reply_to_message_id)
 
@@ -978,12 +997,16 @@ class TarotHoroscopeBot:
                     chat_id,
                     user_id,
                     "await_sign",
-                    {"next": "horoscope_week"},
+                    {"next": "horoscope_week", "save_sign": False},
                 )
-                self._ask_for_sign(chat_id, reply_to_message_id, invalid_value=True)
+                self._ask_for_sign(
+                    chat_id,
+                    reply_to_message_id,
+                    invalid_value=True,
+                    save_to_profile=False,
+                )
                 return
 
-            self.storage.save_zodiac_sign(user_id, sign.name)
             self.storage.clear_conversation_state(chat_id, user_id)
             self._send_weekly_horoscope(chat_id, user_id, reply_to_message_id, sign.name)
             return
@@ -997,7 +1020,7 @@ class TarotHoroscopeBot:
             chat_id,
             user_id,
             "await_sign",
-            {"next": "horoscope_week"},
+            {"next": "horoscope_week", "save_sign": True},
         )
         self._ask_for_sign(chat_id, reply_to_message_id)
 
@@ -2086,12 +2109,22 @@ class TarotHoroscopeBot:
         chat_id: int,
         reply_to_message_id: int,
         invalid_value: bool = False,
+        save_to_profile: bool = True,
     ) -> None:
-        text = (
-            "Не распознал знак. Выбери его с клавиатуры или напиши текстом."
-            if invalid_value
-            else "Какой у тебя знак зодиака? Выбери его с клавиатуры или напиши текстом."
-        )
+        if save_to_profile:
+            text = (
+                "Не распознал знак. Выбери его с клавиатуры или напиши текстом."
+                if invalid_value
+                else "Какой у тебя знак зодиака? Выбери его с клавиатуры или напиши текстом."
+            )
+        else:
+            text = (
+                "Не распознал знак. Выбери его с клавиатуры или напиши текстом. "
+                "Сохранённый знак в профиле не изменится."
+                if invalid_value
+                else "Для какого знака показать прогноз? Выбери его с клавиатуры или напиши текстом. "
+                "Сохранённый знак в профиле не изменится."
+            )
         reply_markup = {
             "keyboard": self._with_menu_button(ZODIAC_KEYBOARD),
             "resize_keyboard": True,
