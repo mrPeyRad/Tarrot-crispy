@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import os
+from urllib.parse import urlparse
 
 
 DEFAULT_BOT_DESCRIPTION = (
@@ -40,8 +41,21 @@ class Settings:
     database_path: Path
     openai_api_key: str | None
     openai_model: str
+    bot_mode: str = "auto"
+    webhook_url: str | None = None
+    webhook_host: str = "0.0.0.0"
+    webhook_port: int = 8080
+    webhook_path: str = "/telegram/webhook"
+    webhook_secret_token: str | None = None
+    subscription_poll_interval: int = 30
     polling_timeout: int = 30
     request_timeout: int = 40
+
+    @property
+    def run_mode(self) -> str:
+        if self.bot_mode == "auto":
+            return "webhook" if self.webhook_url else "polling"
+        return self.bot_mode
 
     @classmethod
     def from_env(cls, project_root: Path) -> "Settings":
@@ -75,6 +89,33 @@ class Settings:
 
         openai_api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
         openai_model = os.getenv("OPENAI_MODEL", "gpt-5-mini").strip() or "gpt-5-mini"
+        bot_mode = (os.getenv("BOT_MODE", "auto").strip().casefold() or "auto")
+        if bot_mode not in {"auto", "polling", "webhook"}:
+            raise RuntimeError(
+                "BOT_MODE должен быть одним из значений: auto, polling, webhook."
+            )
+
+        webhook_url = os.getenv("WEBHOOK_URL", "").strip() or None
+        webhook_host = os.getenv("WEBHOOK_HOST", "0.0.0.0").strip() or "0.0.0.0"
+        webhook_port = int(os.getenv("WEBHOOK_PORT", "8080"))
+        webhook_secret_token = os.getenv("WEBHOOK_SECRET_TOKEN", "").strip() or None
+
+        raw_webhook_path = os.getenv("WEBHOOK_PATH", "").strip()
+        if raw_webhook_path:
+            webhook_path = cls._normalize_webhook_path(raw_webhook_path)
+        elif webhook_url:
+            webhook_path = cls._normalize_webhook_path(urlparse(webhook_url).path)
+        else:
+            webhook_path = "/telegram/webhook"
+
+        if webhook_url:
+            parsed_webhook_url = urlparse(webhook_url)
+            if parsed_webhook_url.scheme != "https" or not parsed_webhook_url.netloc:
+                raise RuntimeError(
+                    "WEBHOOK_URL должен быть полным https-адресом, например https://bot.example.com/telegram/webhook."
+                )
+
+        subscription_poll_interval = int(os.getenv("SUBSCRIPTION_POLL_INTERVAL", "30"))
         polling_timeout = int(os.getenv("POLLING_TIMEOUT", "30"))
         request_timeout = int(os.getenv("REQUEST_TIMEOUT", "40"))
         return cls(
@@ -86,6 +127,21 @@ class Settings:
             database_path=database_path,
             openai_api_key=openai_api_key,
             openai_model=openai_model,
+            bot_mode=bot_mode,
+            webhook_url=webhook_url,
+            webhook_host=webhook_host,
+            webhook_port=webhook_port,
+            webhook_path=webhook_path,
+            webhook_secret_token=webhook_secret_token,
+            subscription_poll_interval=subscription_poll_interval,
             polling_timeout=polling_timeout,
             request_timeout=request_timeout,
         )
+
+    @staticmethod
+    def _normalize_webhook_path(raw_path: str) -> str:
+        normalized = raw_path.strip() or "/telegram/webhook"
+        if normalized.startswith("http://") or normalized.startswith("https://"):
+            normalized = urlparse(normalized).path
+        normalized = f"/{normalized.lstrip('/')}"
+        return normalized.rstrip("/") or "/"

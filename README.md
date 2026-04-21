@@ -101,13 +101,14 @@
 ## Структура проекта
 
 - `main.py` — точка входа.
-- `app/bot.py` — polling-бот, сценарии общения и рассылки.
+- `app/bot.py` — основной рантайм бота, сценарии общения и рассылки.
 - `app/database.py` — SQLite-хранилище профиля, истории, дневника и подписок.
 - `app/tarot.py` — колода из 78 карт, расклады, поиск карт, значения и визуалы колод.
 - `app/horoscope.py` — знаки зодиака, гороскоп на день и неделю.
 - `app/cosmic.py` — лунный календарь, совместимость знаков и астро-сигналы.
 - `app/mystic.py` — руна дня и шар предсказаний.
 - `app/telegram_api.py` — тонкая обёртка над Telegram Bot API.
+- `app/webhook_server.py` — встроенный HTTP-сервер для webhook-режима.
 
 ## Как запустить
 
@@ -115,11 +116,30 @@
 2. Скопируй `.env.example` в `.env`.
 3. Заполни `BOT_TOKEN`.
 4. При желании измени `DATABASE_PATH`, если хочешь хранить SQLite-файл в другом месте.
-5. Запусти:
+5. Для локальной разработки можно оставить авто-режим или polling:
 
 ```bash
 python main.py
 ```
+
+### Webhook-режим
+
+Для сервера теперь поддерживается webhook-режим без long polling.
+
+Минимально нужны:
+
+- `BOT_MODE=webhook`
+- `WEBHOOK_URL=https://your-domain.tld/telegram/webhook`
+- `WEBHOOK_HOST=0.0.0.0`
+- `WEBHOOK_PORT=8080`
+- `WEBHOOK_PATH=/telegram/webhook`
+
+Рекомендуемый вариант для Linux-сервера:
+
+1. Бот слушает обычный HTTP на `127.0.0.1:8080` или `0.0.0.0:8080`.
+2. Снаружи перед ним стоит `nginx` или другой reverse proxy с HTTPS.
+3. В `WEBHOOK_URL` указывается именно внешний публичный `https`-адрес.
+4. В `WEBHOOK_SECRET_TOKEN` можно задать дополнительную проверку входящих webhook-запросов от Telegram.
 
 ## Переменные окружения
 
@@ -127,6 +147,13 @@ python main.py
 BOT_TOKEN=твой_токен
 BOT_USERNAME=your_bot_username
 DATABASE_PATH=bot_data.sqlite3
+BOT_MODE=auto
+WEBHOOK_URL=
+WEBHOOK_HOST=0.0.0.0
+WEBHOOK_PORT=8080
+WEBHOOK_PATH=/telegram/webhook
+WEBHOOK_SECRET_TOKEN=
+SUBSCRIPTION_POLL_INTERVAL=30
 POLLING_TIMEOUT=30
 REQUEST_TIMEOUT=40
 OPENAI_API_KEY=

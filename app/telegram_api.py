@@ -119,6 +119,31 @@ class TelegramAPI:
             payload["chat_id"] = chat_id
         return self._call("setChatMenuButton", payload)
 
+    def set_webhook(
+        self,
+        url: str,
+        secret_token: str | None = None,
+        drop_pending_updates: bool = False,
+        allowed_updates: list[str] | None = None,
+    ) -> bool:
+        payload: dict[str, Any] = {
+            "url": url,
+            "drop_pending_updates": drop_pending_updates,
+            "allowed_updates": allowed_updates or ["message"],
+        }
+        if secret_token is not None:
+            payload["secret_token"] = secret_token
+        return self._call("setWebhook", payload)
+
+    def delete_webhook(
+        self,
+        drop_pending_updates: bool = False,
+    ) -> bool:
+        return self._call(
+            "deleteWebhook",
+            {"drop_pending_updates": drop_pending_updates},
+        )
+
     def get_updates(
         self,
         offset: int | None = None,

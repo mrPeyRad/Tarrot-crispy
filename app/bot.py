@@ -55,6 +55,7 @@ from app.tarot import (
     search_cards,
 )
 from app.telegram_api import TelegramAPI, TelegramAPIError
+from app.webhook_server import TelegramWebhookServer
 
 
 logging.basicConfig(
@@ -166,6 +167,18 @@ class TarotHoroscopeBot:
     def run(self) -> None:
         self._configure_public_profile()
         self._configure_native_menu()
+        if self.settings.run_mode == "webhook":
+            self._run_webhook()
+            return
+
+        self._run_polling()
+
+    def _run_polling(self) -> None:
+        try:
+            self.api.delete_webhook(drop_pending_updates=False)
+        except TelegramAPIError:
+            LOGGER.exception("Не удалось отключить webhook перед переходом в polling")
+
         LOGGER.info("Бот запущен и ожидает обновления.")
         offset: int | None = None
 
@@ -185,6 +198,45 @@ class TarotHoroscopeBot:
             except Exception:
                 LOGGER.exception("Непредвиденная ошибка в polling-цикле")
                 time.sleep(3)
+
+    def _run_webhook(self) -> None:
+        if not self.settings.webhook_url:
+            raise RuntimeError(
+                "Для webhook-режима нужно указать WEBHOOK_URL с публичным https-адресом."
+            )
+
+        self.api.set_webhook(
+            self.settings.webhook_url,
+            secret_token=self.settings.webhook_secret_token,
+            drop_pending_updates=False,
+            allowed_updates=["message"],
+        )
+
+        self._dispatch_due_subscriptions()
+        server = TelegramWebhookServer(
+            host=self.settings.webhook_host,
+            port=self.settings.webhook_port,
+            webhook_path=self.settings.webhook_path,
+            on_update=self._handle_update,
+            on_tick=self._dispatch_due_subscriptions,
+            tick_interval=self.settings.subscription_poll_interval,
+            secret_token=self.settings.webhook_secret_token,
+            logger=LOGGER,
+        )
+
+        bind_host, bind_port = server.bind_address
+        LOGGER.info(
+            "Webhook-сервер запущен на %s:%s и ожидает обновления по пути %s.",
+            bind_host,
+            bind_port,
+            self.settings.webhook_path,
+        )
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            LOGGER.info("Получен сигнал остановки, завершаю webhook-сервер.")
+        finally:
+            server.shutdown()
 
     def _handle_update(self, update: dict[str, Any]) -> None:
         message = update.get("message")

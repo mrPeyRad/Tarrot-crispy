@@ -424,6 +424,40 @@ class BotParsingTests(unittest.TestCase):
         self.assertEqual(settings.bot_description, DEFAULT_BOT_DESCRIPTION)
         self.assertEqual(settings.bot_short_description, DEFAULT_BOT_SHORT_DESCRIPTION)
 
+    def test_settings_from_env_detects_webhook_mode_from_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir, patch.dict("os.environ", {}, clear=True):
+            project_root = Path(tmp_dir)
+            (project_root / ".env").write_text(
+                (
+                    "BOT_TOKEN=123:abc\n"
+                    "WEBHOOK_URL=https://bot.example.com/custom/hook\n"
+                ),
+                encoding="utf-8",
+            )
+
+            settings = Settings.from_env(project_root)
+
+        self.assertEqual(settings.run_mode, "webhook")
+        self.assertEqual(settings.webhook_path, "/custom/hook")
+
+    def test_settings_from_env_normalizes_explicit_webhook_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir, patch.dict("os.environ", {}, clear=True):
+            project_root = Path(tmp_dir)
+            (project_root / ".env").write_text(
+                (
+                    "BOT_TOKEN=123:abc\n"
+                    "BOT_MODE=webhook\n"
+                    "WEBHOOK_URL=https://bot.example.com\n"
+                    "WEBHOOK_PATH=telegram/webhook/\n"
+                ),
+                encoding="utf-8",
+            )
+
+            settings = Settings.from_env(project_root)
+
+        self.assertEqual(settings.run_mode, "webhook")
+        self.assertEqual(settings.webhook_path, "/telegram/webhook")
+
     def test_build_main_menu_keyboard_is_not_persistent(self) -> None:
         bot = TarotHoroscopeBot.__new__(TarotHoroscopeBot)
         markup = bot._build_main_menu_keyboard()
